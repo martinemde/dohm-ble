@@ -1,0 +1,18 @@
+[project]
+name = "dohm"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "Martin Emde", email = "me@martinemde.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "bleak>=3.0.2",
+]
+
+[project.scripts]
+dohm = "dohm:main"
+
+[build-system]
+requires = ["uv_build>=0.9.21,<0.10.0"]
+build-backend = "uv_build"
