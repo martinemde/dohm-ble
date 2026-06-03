@@ -28,9 +28,19 @@ class DohmCommandError(DohmError):
 async def _default_connector(ble_device):
     from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
-    return await establish_connection(
+    client = await establish_connection(
         BleakClientWithServiceCache, ble_device, ble_device.address
     )
+    # A connection cut short (e.g. the device's brief connectable window) can
+    # leave a partial service cache that hides the command characteristic. If
+    # it's missing, clear the cache and rediscover once.
+    if client.services.get_characteristic(CHARACTERISTIC_UUID) is None:
+        await client.clear_cache()
+        await client.disconnect()
+        client = await establish_connection(
+            BleakClientWithServiceCache, ble_device, ble_device.address
+        )
+    return client
 
 
 class DohmClient:
