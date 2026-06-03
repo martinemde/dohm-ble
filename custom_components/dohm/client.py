@@ -53,6 +53,7 @@ class DohmClient:
         self._ble_device = ble_device
         self._connector = connector or _default_connector
         self._client = None
+        self._notifying = False
         self._device_id: str | None = None
         self._queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._lock = asyncio.Lock()
@@ -72,11 +73,26 @@ class DohmClient:
             self._ble_device = ble_device
         self._client = await self._connector(self._ble_device)
         await self._client.start_notify(CHARACTERISTIC_UUID, self._on_notify)
+        self._notifying = True
         await self.identify()
 
     async def disconnect(self) -> None:
-        if self._client is not None:
-            await self._client.disconnect()
+        client = self._client
+        self._client = None
+        if client is None:
+            return
+        # Release BlueZ's per-characteristic notify subscription before dropping
+        # the link. Skipping this leaves it "acquired", so the next connect's
+        # start_notify fails with org.bluez.Error.NotPermitted: Notify acquired,
+        # piling up HCI resources until ENOMEM. The link may already be gone, so
+        # failing to stop notify must not prevent the disconnect.
+        if self._notifying:
+            try:
+                await client.stop_notify(CHARACTERISTIC_UUID)
+            except Exception:  # noqa: BLE001 - best-effort cleanup
+                pass
+            self._notifying = False
+        await client.disconnect()
 
     def _on_notify(self, _sender, data: bytearray) -> None:
         self._queue.put_nowait(bytes(data))

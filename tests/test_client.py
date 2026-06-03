@@ -79,6 +79,24 @@ async def test_is_connected_reflects_transport(client, fake):
     assert client.is_connected is False
 
 
+async def test_disconnect_stops_notify_before_disconnecting(client, fake):
+    # BlueZ keeps a notify subscription acquired per-characteristic. If we
+    # disconnect without releasing it, the next connect's start_notify fails
+    # with org.bluez.Error.NotPermitted: Notify acquired.
+    await client.disconnect()
+    assert fake._notify is None
+
+
+async def test_disconnect_still_disconnects_if_stop_notify_raises(client, fake):
+    # The link may already be gone when we tear down; cleanup must not throw.
+    async def boom(_char):
+        raise RuntimeError("disconnected before stop_notify")
+
+    fake.stop_notify = boom
+    await client.disconnect()
+    assert fake.is_connected is False
+
+
 async def test_set_speed_sends_id_prefixed_command(client, fake):
     await client.set_speed(7)
     assert b"S,0136C4,7$" in fake.writes
