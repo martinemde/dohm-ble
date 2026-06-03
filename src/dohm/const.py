@@ -1,14 +1,15 @@
 """Constants for the Marpac Dohm BLE protocol."""
 
-# Advertised GATT service UUID. Useful for recognizing the device (e.g. a Home
-# Assistant bluetooth matcher). This is what was originally mistaken for a
-# peripheral address.
-SERVICE_UUID = "aa114b7e-92cf-f378-b56d-5d6d1654404b"
+# The GATT service that carries the command characteristic, and the single
+# writable/notify characteristic itself (confirmed from the live GATT table).
+# The characteristic is write + notify, NOT readable: state arrives only via
+# notifications. (TI BLE module; UUIDs are from the SensorTag family.)
+COMMAND_SERVICE_UUID = "00005600-d102-11e1-9b23-00025b005aa5"
+CHARACTERISTIC_UUID = "00005601-d102-11e1-9b23-00025b005aa5"
 
-# The single characteristic the device exposes: writable (with response) and
-# supports notifications, but is NOT readable. State only ever arrives via
-# notifications. (TI BLE module; UUID is from the SensorTag family.)
-CHARACTERISTIC_UUID = "00005600-d102-11e1-9b23-00025b005aa5"
+# Seen in the device's advertisement but NOT in the GATT table. Kept because a
+# Home Assistant bluetooth matcher can match on an advertised service UUID.
+ADVERTISED_SERVICE_UUID = "aa114b7e-92cf-f378-b56d-5d6d1654404b"
 
 # BLE local name the device advertises, e.g. "MARPAC_DOHMB2". The suffix varies
 # per unit, so match on this prefix for discovery. NOTE: the per-host
@@ -16,6 +17,10 @@ CHARACTERISTIC_UUID = "00005600-d102-11e1-9b23-00025b005aa5"
 # name (or service UUID), never by a hardcoded address.
 LOCAL_NAME_PREFIX = "MARPAC_DOHM"
 
-# Command grammar observed: COMMAND[,ID[,VALUE]]$  e.g. b"S,0136C4,3$" sets
-# speed; the device acknowledges accepted commands with b"OK$".
+# Speed range accepted by the device: 1..10 (11 returns "Failed 03$").
+MIN_SPEED = 1
+MAX_SPEED = 10
+
+# Command grammar: COMMAND[,ID[,VALUE]]$  e.g. b"S,0136C4,3$" sets speed; the
+# device acknowledges accepted commands with b"OK$".
 TERMINATOR = "$"

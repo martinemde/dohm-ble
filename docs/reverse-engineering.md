@@ -80,9 +80,12 @@ uv run tools/probe.py --scan     # list nearby devices, confirm name + RSSI
 uv run tools/probe.py            # scan, match MARPAC_DOHM*, connect, dump GATT
 ```
 
-## Open question still being tested
+## Button behavior (resolved)
 
-Whether the top-button hold is needed only to bond a **new** client (good: the
-HA config flow asks for one press at setup) or on **every** reconnect (bad: HA
-can't recover unattended). Test: connect, `:quit`, reconnect *without* the
-button — does it still work?
+The top-button hold is **only for discovery** — it makes the device advertise so
+a new client can find it. Once known, reconnection works **without** the button.
+Confirmed by reconnecting from a fresh probe run with no button press.
+
+Implication for Home Assistant: the config flow asks for one button press at
+setup (to discover/pair), after which HA reconnects unattended forever. No
+recovery problem.

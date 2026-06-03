@@ -39,6 +39,11 @@ def test_set_power_off():
     assert protocol.set_power(ID, False) == b"M,0136C4,0$"
 
 
+def test_set_speed_two_digit_max_is_not_padded():
+    # Speed 10 is the confirmed maximum; sets send the bare integer.
+    assert protocol.set_speed(ID, 10) == b"S,0136C4,10$"
+
+
 # --- Decoding: device replies and notifications ------------------------------
 
 def test_parse_device_id_reply():
@@ -47,6 +52,15 @@ def test_parse_device_id_reply():
 
 def test_parse_speed_report_strips_zero_padding():
     assert protocol.parse(b"S,02$") == protocol.SpeedReport(2)
+
+
+def test_parse_speed_report_two_digit():
+    assert protocol.parse(b"S,10$") == protocol.SpeedReport(10)
+
+
+def test_parse_failure_reply():
+    # The device rejects bad values with "Failed <code>$" (space, not comma).
+    assert protocol.parse(b"Failed 03$") == protocol.Failure("03")
 
 
 def test_parse_power_on_report():

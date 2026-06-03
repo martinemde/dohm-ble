@@ -5,10 +5,26 @@ Reverse-engineered from a PacketLogger capture of the official Dohm macOS app
 
 ## Transport
 
-- Single characteristic `00005600-d102-11e1-9b23-00025b005aa5` (ATT handle
-  `0x001a` in this capture). Writable **with response**, **notify**, **not
-  readable**. Its CCCD is handle `0x001b` (write `0100` to subscribe).
+- Command service `00005600-d102-11e1-9b23-00025b005aa5` containing a single
+  characteristic `00005601-d102-11e1-9b23-00025b005aa5` (handle `0x0019` live).
+  Writable **with response**, **notify**, **not readable** — state arrives only
+  via notifications.
+- Also present: Device Information Service `180a` (model/serial/firmware — good
+  for the HA device registry) and Battery Service `180f` with battery level
+  `2a19` `[read,notify]` (a free HA battery sensor later).
+- `aa114b7e-…` (originally mistaken for the characteristic) appears only in the
+  advertisement, not the GATT table.
 - All payloads are UTF-8 strings terminated by `$`.
+
+## Reply taxonomy
+
+Four kinds of notification come back:
+
+- valid **set** → `OK$`
+- valid **query** → a typed report (`I,…$`, `S,0N$`, `M,1$`, `N,…$`)
+- **out-of-range value** → `Failed NN$` (space, not comma; e.g. `Failed 03$`)
+- **unrecognized command** → the input is **echoed back verbatim** (e.g. send
+  `huteno$`, get `huteno$`)
 
 ## Grammar
 
@@ -54,10 +70,11 @@ were missing: there is no secret key — commands just require the ID prefix.
 
 ## Speed (`S`/`s`) — IN SCOPE
 
-- `S,<id>,N$` sets speed; reply `OK$`. Set value is a single digit.
+- `S,<id>,N$` sets speed; reply `OK$`. Value is the bare integer, 1–2 digits
+  (`S,<id>,3$`, `S,<id>,10$`).
 - `s,<id>$` returns `S,0N$` (zero-padded two digits).
-- Speeds observed in this capture: **2, 3, 4, 5**. Full range not yet confirmed
-  (probe `S,<id>,1$`, `S,<id>,0$`, and the upper bound to nail `speed_count`).
+- **Confirmed range: 1–10.** `S,<id>,11$` returns `Failed 03$`. So HA
+  `speed_count = 10`.
 
 ## State reads
 

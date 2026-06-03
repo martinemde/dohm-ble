@@ -42,6 +42,13 @@ class Ack:
     pass
 
 
+@dataclass(frozen=True)
+class Failure:
+    """A rejected command, e.g. ``Failed 03$`` for an out-of-range value."""
+
+    code: str
+
+
 # --- Encoding ----------------------------------------------------------------
 
 def query_id() -> bytes:
@@ -67,7 +74,9 @@ def set_speed(device_id: str, speed: int) -> bytes:
 
 # --- Decoding ----------------------------------------------------------------
 
-def parse(payload: bytes) -> DeviceId | SpeedReport | PowerReport | NameReport | Ack:
+def parse(
+    payload: bytes,
+) -> DeviceId | SpeedReport | PowerReport | NameReport | Ack | Failure:
     """Decode a device reply/notification into a typed message."""
     text = payload.decode()
     if not text.endswith(TERMINATOR):
@@ -76,6 +85,8 @@ def parse(payload: bytes) -> DeviceId | SpeedReport | PowerReport | NameReport |
 
     if body == "OK":
         return Ack()
+    if body.startswith("Failed"):
+        return Failure(body.removeprefix("Failed").strip())
 
     letter, _, rest = body.partition(",")
     if letter == "I":
