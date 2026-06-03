@@ -52,11 +52,16 @@ def run_tshark(capture: str) -> list[str]:
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
-def decode_hex(colon_hex: str) -> bytes:
-    """Turn tshark's '53:2c:30:33:24' into raw bytes."""
-    if not colon_hex:
+def decode_hex(hex_str: str) -> bytes:
+    """Turn tshark's value field into raw bytes.
+
+    tshark renders btatt.value as continuous hex ('4f4b24'); older builds use
+    colon separators ('4f:4b:24'). Accept either.
+    """
+    cleaned = hex_str.replace(":", "").strip()
+    if not cleaned:
         return b""
-    return bytes(int(b, 16) for b in colon_hex.split(":"))
+    return bytes.fromhex(cleaned)
 
 
 def as_text(data: bytes) -> str:
