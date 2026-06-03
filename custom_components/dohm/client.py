@@ -11,10 +11,23 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 
+from bleak.exc import BleakError
+
 from . import protocol
 from .const import CHARACTERISTIC_UUID, MAX_SPEED, MIN_SPEED
 
 COMMAND_TIMEOUT = 5.0
+
+
+def _is_notify_acquired(err: BleakError) -> bool:
+    """True for ``org.bluez.Error.NotPermitted: Notify acquired``.
+
+    BlueZ refuses ``StartNotify`` with this when an earlier connection's notify
+    subscription is still acquired (e.g. an unclean disconnect never released
+    it). Matched by message so it survives bleak/BlueZ version differences.
+    """
+    text = str(err)
+    return "Notify acquired" in text or "NotPermitted" in text
 
 
 class DohmError(Exception):
@@ -72,9 +85,27 @@ class DohmClient:
         if ble_device is not None:
             self._ble_device = ble_device
         self._client = await self._connector(self._ble_device)
-        await self._client.start_notify(CHARACTERISTIC_UUID, self._on_notify)
-        self._notifying = True
+        await self._subscribe()
         await self.identify()
+
+    async def _subscribe(self) -> None:
+        try:
+            await self._client.start_notify(CHARACTERISTIC_UUID, self._on_notify)
+        except BleakError as err:
+            if not _is_notify_acquired(err):
+                raise
+            # An earlier connection left BlueZ's notify subscription acquired and
+            # our graceful disconnect never ran to release it (crash, dropped
+            # link, integration reload). A full disconnect drops the device
+            # connection and frees it; reconnect once and subscribe again.
+            try:
+                await self._client.stop_notify(CHARACTERISTIC_UUID)
+            except Exception:  # noqa: BLE001 - best-effort; link may be gone
+                pass
+            await self._client.disconnect()
+            self._client = await self._connector(self._ble_device)
+            await self._client.start_notify(CHARACTERISTIC_UUID, self._on_notify)
+        self._notifying = True
 
     async def disconnect(self) -> None:
         client = self._client

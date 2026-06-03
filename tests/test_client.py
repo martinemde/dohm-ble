@@ -1,8 +1,14 @@
 """Tests for DohmClient against a fake that mimics the real device replies."""
 
 import pytest
+from bleak.exc import BleakDBusError, BleakError
 
 from custom_components.dohm.client import DohmClient
+
+
+def _notify_acquired_error() -> BleakDBusError:
+    """The error BlueZ raises when a stale notify subscription lingers."""
+    return BleakDBusError("org.bluez.Error.NotPermitted", ["Notify acquired"])
 
 
 class FakeDohm:
@@ -95,6 +101,49 @@ async def test_disconnect_still_disconnects_if_stop_notify_raises(client, fake):
     fake.stop_notify = boom
     await client.disconnect()
     assert fake.is_connected is False
+
+
+async def test_connect_recovers_from_stuck_notify_acquired():
+    # A prior unclean disconnect (crash, dropped link, integration reload) can
+    # leave BlueZ's notify subscription "acquired"; the next start_notify is then
+    # refused with org.bluez.Error.NotPermitted. connect() must self-heal by
+    # reconnecting and subscribing again rather than failing setup forever.
+    clean = FakeDohm()
+    calls = {"n": 0}
+
+    async def connector(_ble_device):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            stuck = FakeDohm()
+
+            async def boom(_char, _cb):
+                raise _notify_acquired_error()
+
+            stuck.start_notify = boom
+            return stuck
+        return clean
+
+    client = DohmClient(ble_device=object(), connector=connector)
+    await client.connect()
+
+    assert calls["n"] == 2  # reconnected once to clear the stuck subscription
+    assert client.is_connected
+    assert client.device_id == "0136C4"
+
+
+async def test_connect_reraises_unrelated_notify_errors():
+    async def connector(_ble_device):
+        fake = FakeDohm()
+
+        async def boom(_char, _cb):
+            raise BleakError("le-connection-abort-by-local")
+
+        fake.start_notify = boom
+        return fake
+
+    client = DohmClient(ble_device=object(), connector=connector)
+    with pytest.raises(BleakError):
+        await client.connect()
 
 
 async def test_set_speed_sends_id_prefixed_command(client, fake):
