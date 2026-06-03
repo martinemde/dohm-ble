@@ -11,12 +11,12 @@ dependencies = [
     "bleak-retry-connector>=4.6.1",
 ]
 
+[tool.uv]
+package = false
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-
-[build-system]
-requires = ["uv_build>=0.9.21,<0.10.0"]
-build-backend = "uv_build"
+pythonpath = ["."]
 
 [dependency-groups]
 dev = [

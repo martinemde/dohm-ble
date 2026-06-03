@@ -1,0 +1,21 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Yogasleep Dohm Connect",
+        "description": "Hold the top button on the Dohm for ~5 seconds to make it discoverable, then select it.",
+        "data": {
+          "address": "Device"
+        }
+      },
+      "confirm": {
+        "description": "Do you want to set up {name}?"
+      }
+    },
+    "abort": {
+      "no_devices_found": "No unconfigured Dohm devices found. Hold the top button for ~5 seconds to make it discoverable, then try again.",
+      "already_configured": "This Dohm is already configured."
+    }
+  }
+}

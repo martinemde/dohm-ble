@@ -6,7 +6,7 @@ capture documented in docs/protocol.md (device id 0136C4).
 
 import pytest
 
-from dohm import protocol
+from custom_components.dohm import protocol
 
 ID = "0136C4"
 

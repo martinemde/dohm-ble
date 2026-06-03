@@ -1,5 +1,11 @@
 """Constants for the Marpac Dohm BLE protocol."""
 
+# Home Assistant integration identity.
+DOMAIN = "dohm"
+MANUFACTURER = "Yogasleep"  # formerly Marpac; the unit still advertises MARPAC_*
+MODEL = "Dohm Connect"
+MODEL_ID = "4000900"
+
 # The GATT service that carries the command characteristic, and the single
 # writable/notify characteristic itself (confirmed from the live GATT table).
 # The characteristic is write + notify, NOT readable: state arrives only via

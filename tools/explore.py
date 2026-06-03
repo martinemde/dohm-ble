@@ -17,8 +17,8 @@ import asyncio
 
 from bleak import BleakClient, BleakScanner
 
-from dohm import protocol
-from dohm.const import LOCAL_NAME_PREFIX
+from custom_components.dohm import protocol
+from custom_components.dohm.const import LOCAL_NAME_PREFIX
 
 SCAN_SECONDS = 8.0
 REPLY_TIMEOUT = 1.5

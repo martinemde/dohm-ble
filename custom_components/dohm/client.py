@@ -51,7 +51,15 @@ class DohmClient:
     def device_id(self) -> str | None:
         return self._device_id
 
-    async def connect(self) -> None:
+    @property
+    def is_connected(self) -> bool:
+        return self._client is not None and self._client.is_connected
+
+    async def connect(self, ble_device=None) -> None:
+        # In Home Assistant the BLEDevice can change between connections, so
+        # allow refreshing it on (re)connect.
+        if ble_device is not None:
+            self._ble_device = ble_device
         self._client = await self._connector(self._ble_device)
         await self._client.start_notify(CHARACTERISTIC_UUID, self._on_notify)
         await self.identify()

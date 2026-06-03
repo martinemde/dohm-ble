@@ -26,7 +26,7 @@ import sys
 from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 
-from dohm.const import LOCAL_NAME_PREFIX, TERMINATOR
+from custom_components.dohm.const import LOCAL_NAME_PREFIX, TERMINATOR
 
 SCAN_SECONDS = 8.0
 NAME_HINTS = (LOCAL_NAME_PREFIX.lower(), "marpac", "dohm")

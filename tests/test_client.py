@@ -2,7 +2,7 @@
 
 import pytest
 
-from dohm.client import DohmClient
+from custom_components.dohm.client import DohmClient
 
 
 class FakeDohm:
@@ -71,6 +71,12 @@ async def client(fake):
 
 async def test_connect_learns_device_id(client):
     assert client.device_id == "0136C4"
+
+
+async def test_is_connected_reflects_transport(client, fake):
+    assert client.is_connected is True
+    await client.disconnect()
+    assert client.is_connected is False
 
 
 async def test_set_speed_sends_id_prefixed_command(client, fake):

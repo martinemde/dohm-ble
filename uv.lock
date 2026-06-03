@@ -104,7 +104,7 @@ wheels = [
 [[package]]
 name = "dohm"
 version = "0.1.0"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
     { name = "bleak" },
     { name = "bleak-retry-connector" },
