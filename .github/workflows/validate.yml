@@ -23,6 +23,10 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+          # "brands" requires a separate PR to home-assistant/brands (optional
+          # for a custom-repository integration); skip it so CI reflects
+          # installability rather than default-store listing criteria.
+          ignore: brands
 
   tests:
     name: Unit tests
