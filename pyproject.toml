@@ -1,17 +1,18 @@
 [project]
 name = "dohm"
 version = "0.1.0"
-description = "Add your description here"
+description = "Reverse-engineered BLE control for the Marpac Dohm sound machine"
 authors = [
     { name = "Martin Emde", email = "me@martinemde.com" }
 ]
 requires-python = ">=3.13"
 dependencies = [
     "bleak>=3.0.2",
+    "bleak-retry-connector>=4.6.1",
 ]
 
-[project.scripts]
-dohm = "dohm:main"
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 
 [build-system]
 requires = ["uv_build>=0.9.21,<0.10.0"]
@@ -20,4 +21,5 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pytest-asyncio>=1.4.0",
 ]
