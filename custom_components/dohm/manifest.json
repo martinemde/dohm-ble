@@ -3,6 +3,10 @@
   "name": "Yogasleep Dohm Connect",
   "bluetooth": [
     {
+      "service_uuid": "00005600-d102-11e1-9b23-00025b005aa5",
+      "connectable": true
+    },
+    {
       "local_name": "MARPAC_DOHM*",
       "connectable": true
     }
@@ -15,5 +19,5 @@
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/martinemde/dohm-ble/issues",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.1.1"
 }

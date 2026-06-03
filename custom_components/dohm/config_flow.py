@@ -12,7 +12,21 @@ from homeassistant.components.bluetooth import (
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS
 
-from .const import DOMAIN, LOCAL_NAME_PREFIX
+from .const import COMMAND_SERVICE_UUID, DOMAIN, LOCAL_NAME_PREFIX
+
+
+def _is_dohm(info: BluetoothServiceInfoBleak) -> bool:
+    """Identify a Dohm. Its advertisement carries the command service UUID but
+    no local name, so match on the service UUID (with a name fallback)."""
+    if COMMAND_SERVICE_UUID in info.service_uuids:
+        return True
+    return bool(info.name) and info.name.upper().startswith(LOCAL_NAME_PREFIX)
+
+
+def _display_name(info: BluetoothServiceInfoBleak) -> str:
+    if info.name and info.name.upper().startswith(LOCAL_NAME_PREFIX):
+        return info.name
+    return f"Yogasleep Dohm Connect ({info.address})"
 
 
 class DohmConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -31,7 +45,7 @@ class DohmConfigFlow(ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
         self._discovery = discovery_info
-        self.context["title_placeholders"] = {"name": discovery_info.name}
+        self.context["title_placeholders"] = {"name": _display_name(discovery_info)}
         return await self.async_step_confirm()
 
     async def async_step_confirm(
@@ -39,14 +53,13 @@ class DohmConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Confirm a single discovered device."""
         assert self._discovery is not None
+        name = _display_name(self._discovery)
         if user_input is not None:
-            return self._create_entry(
-                self._discovery.address, self._discovery.name
-            )
+            return self._create_entry(self._discovery.address, name)
         self._set_confirm_only()
         return self.async_show_form(
             step_id="confirm",
-            description_placeholders={"name": self._discovery.name},
+            description_placeholders={"name": name},
         )
 
     async def async_step_user(
@@ -61,13 +74,9 @@ class DohmConfigFlow(ConfigFlow, domain=DOMAIN):
 
         current = self._async_current_ids()
         for info in async_discovered_service_info(self.hass, connectable=True):
-            if (
-                info.address in current
-                or not info.name
-                or not info.name.upper().startswith(LOCAL_NAME_PREFIX)
-            ):
+            if info.address in current or not _is_dohm(info):
                 continue
-            self._discovered[info.address] = info.name
+            self._discovered[info.address] = _display_name(info)
 
         if not self._discovered:
             return self.async_abort(reason="no_devices_found")

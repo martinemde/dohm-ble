@@ -10,11 +10,15 @@ MODEL_ID = "4000900"
 # writable/notify characteristic itself (confirmed from the live GATT table).
 # The characteristic is write + notify, NOT readable: state arrives only via
 # notifications. (TI BLE module; UUIDs are from the SensorTag family.)
+#
+# The service UUID is also broadcast in the advertisement, so it is what Home
+# Assistant discovery matches on. (The device's local NAME is NOT in the
+# advertisement — only the service UUID is — so a name matcher does not fire.)
 COMMAND_SERVICE_UUID = "00005600-d102-11e1-9b23-00025b005aa5"
 CHARACTERISTIC_UUID = "00005601-d102-11e1-9b23-00025b005aa5"
 
-# Seen in the device's advertisement but NOT in the GATT table. Kept because a
-# Home Assistant bluetooth matcher can match on an advertised service UUID.
+# Originally reported (by LightBlue) as the device's UUID, but a live scan shows
+# it is neither advertised nor in the GATT table. Kept only for reference.
 ADVERTISED_SERVICE_UUID = "aa114b7e-92cf-f378-b56d-5d6d1654404b"
 
 # BLE local name the device advertises, e.g. "MARPAC_DOHMB2". The suffix varies

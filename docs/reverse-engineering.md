@@ -89,3 +89,21 @@ Confirmed by reconnecting from a fresh probe run with no button press.
 Implication for Home Assistant: the config flow asks for one button press at
 setup (to discover/pair), after which HA reconnects unattended forever. No
 recovery problem.
+
+## Discovery matcher (resolved)
+
+The device's advertisement (dumped with `tools/advert.py` while holding the
+button) contains **no local name** — `local_name` is `None` — but **does**
+advertise the command service UUID:
+
+```
+=== MARPAC_DOHMB2 @ ...  (-46 dBm) ===
+  local_name:    None
+  service_uuids: ['00005600-d102-11e1-9b23-00025b005aa5']
+```
+
+So a Home Assistant `local_name` matcher never fires on Linux/BlueZ (the name
+only arrives via active-scan resolution, which macos CoreBluetooth does but a
+passive scan does not). The integration matches on the **service UUID**
+`00005600-…` instead, both in `manifest.json` and the config flow's device
+filter.
