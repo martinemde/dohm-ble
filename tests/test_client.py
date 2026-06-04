@@ -131,6 +131,56 @@ async def test_connect_recovers_from_stuck_notify_acquired():
     assert client.device_id == "0136C4"
 
 
+async def test_connect_cleans_up_when_a_later_step_fails():
+    # connect() gets past start_notify, then identify() sends the first command
+    # and waits for a reply on a racy, single-connection link where replies can
+    # time out. If that fails, connect() must release the notify subscription
+    # and drop the link before propagating. Leaking a connected, notifying
+    # client keeps BlueZ's notify acquired (the link stays up, so the FD is
+    # never freed), and the *next* setup's start_notify is refused with
+    # NotPermitted: Notify acquired -- the leak v0.1.2-0.1.4 chased downstream.
+    fake = FakeDohm()
+
+    async def no_reply(_char, _data, response=True):
+        raise TimeoutError("no reply on racy link")
+
+    fake.write_gatt_char = no_reply
+
+    async def connector(_ble_device):
+        return fake
+
+    client = DohmClient(ble_device=object(), connector=connector)
+    with pytest.raises(TimeoutError):
+        await client.connect()
+
+    assert fake._notify is None  # notify subscription released
+    assert fake.is_connected is False  # link dropped, BlueZ frees the acquire
+    assert client.is_connected is False
+
+
+async def test_connect_cleanup_failure_preserves_original_error():
+    # When connect() fails partway and the cleanup disconnect itself raises (the
+    # link may already be gone), the caller must still see the original cause,
+    # not a confusing disconnect error.
+    fake = FakeDohm()
+
+    async def no_reply(_char, _data, response=True):
+        raise TimeoutError("no reply on racy link")
+
+    async def cleanup_boom():
+        raise RuntimeError("link already gone")
+
+    fake.write_gatt_char = no_reply
+    fake.disconnect = cleanup_boom
+
+    async def connector(_ble_device):
+        return fake
+
+    client = DohmClient(ble_device=object(), connector=connector)
+    with pytest.raises(TimeoutError):
+        await client.connect()
+
+
 async def test_connect_reraises_unrelated_notify_errors():
     async def connector(_ble_device):
         fake = FakeDohm()

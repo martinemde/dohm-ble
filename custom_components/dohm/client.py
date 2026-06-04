@@ -85,8 +85,20 @@ class DohmClient:
         if ble_device is not None:
             self._ble_device = ble_device
         self._client = await self._connector(self._ble_device)
-        await self._subscribe()
-        await self.identify()
+        # Once connected, any later failure (notably identify() timing out on
+        # this racy single-connection link) must not leak a connected, notifying
+        # client: the held link keeps BlueZ's notify subscription acquired, so
+        # the next start_notify is refused with NotPermitted: Notify acquired.
+        # Release it before propagating. disconnect() is best-effort cleanup.
+        try:
+            await self._subscribe()
+            await self.identify()
+        except BaseException:
+            try:
+                await self.disconnect()
+            except Exception:  # noqa: BLE001 - best-effort; keep the real cause
+                pass
+            raise
 
     async def _subscribe(self) -> None:
         try:

@@ -6,7 +6,7 @@ Pairs with [protocol.md](protocol.md) and [reverse-engineering.md](reverse-engin
 
 ---
 
-## ⚠️ CURRENT BUG (unresolved as of v0.1.4)
+## Notify-acquired leak — root cause found, fixed in v0.1.5
 
 **Symptom:** adding the config entry fails during setup with:
 
@@ -20,48 +20,48 @@ That error comes from `client.connect()` → `start_notify()`: BlueZ refuses a
 second `StartNotify` because a notify subscription is **already acquired** on
 characteristic `00005601` from an earlier connection that never released it.
 
-**What we've shipped so far (and why it's not enough):**
+**Root cause (the one we kept chasing downstream):** `connect()` leaked a
+connected, *notifying* client whenever a step **after** `start_notify` failed.
+The sequence is `establish_connection` → `_subscribe()` (start_notify, sets
+`_notifying=True`) → `identify()` (writes the first command and waits ≤5 s for a
+reply). On this **racy, single-connection** link the reply can time out / the
+write can abort, so `identify()` raises — and the old `connect()` propagated that
+with the client still connected and notify still acquired. Nothing called
+`disconnect()`. During setup that became `ConfigEntryNotReady` ("will retry");
+the coordinator/client were dropped but the **link stayed up** (held by the
+orphaned client), so BlueZ never freed the notify FD. The next setup attempt's
+`start_notify` then hit `NotPermitted: Notify acquired`.
 
-- **v0.1.3** — `disconnect()` calls `stop_notify()` before dropping the link.
-  Fixes the *graceful* teardown path only. Does nothing for a subscription
-  already stuck from a prior **unclean** disconnect (crash, dropped link,
-  integration reload), which is the state the adapter gets into.
-- **v0.1.4** — `connect()`/`_subscribe()` catches the `Notify acquired`
-  `BleakError` and self-heals: `stop_notify` → full `disconnect()` → reconnect →
-  retry `start_notify` once. **Still reported failing** by the user.
+Key realization that pins it down: BlueZ tears notify state down with the link,
+so a notify subscription can only stay "acquired" while the **link** stays up —
+and the link only stays up because *we* leaked a client holding it. That also
+explains why v0.1.4's reconnect-self-heal didn't help: the orphaned client keeps
+the (ref-counted, HA-managed) connection slot alive, so the new client's
+`disconnect()` can't force the physical link down, and `notify_io` never
+releases. The cure is to **not orphan the client**, not to recover after.
 
-**Leading hypotheses for why v0.1.4 isn't sufficient (investigate these):**
+**Fix (v0.1.5):** `connect()` now wraps everything after the successful
+`establish_connection` in `try/except BaseException: await self.disconnect()`
+(best-effort; cleanup errors don't mask the real cause). Any partial connect now
+releases `stop_notify` + drops the link before propagating, so no orphaned
+acquire survives. Covered by `test_connect_cleans_up_when_a_later_step_fails`
+and `test_connect_cleanup_failure_preserves_original_error`.
 
-1. **Process-held leaked FD.** `bleak`/BlueZ delivers notifications over an
-   `AcquireNotify` file descriptor. If a *previous* `BleakClient` object inside
-   HA's long-running process leaked without closing that FD, BlueZ keeps the
-   subscription "acquired" regardless of our new client reconnecting. Only the
-   holding process closing the FD (HA restart) or a BlueZ-level reset releases
-   it. Our in-`connect()` reconnect can't reach that other client's FD.
-2. **Recovery reconnect contends and fails.** Connecting is racy on this device
-   (`le-connection-abort-by-local`, see below) because it's single-connection
-   and HA's own stack/the phone app fight for the slot. The recovery's
-   `disconnect()`+reconnect may itself get aborted, so the retry `start_notify`
-   never runs cleanly.
-3. **HA Bluetooth connection pooling** keeps the device connected across setup
-   retries, so our `disconnect()` doesn't actually drop the underlying
-   connection, so BlueZ never releases the per-connection notify state.
+**Defense in depth still in place:** v0.1.3's `stop_notify` before graceful
+`disconnect`, and v0.1.4's in-`_subscribe` self-heal (kept as a fallback for
+acquires leaked by something *outside* this code path, e.g. a hard HA crash).
 
-**Candidate next fixes (not yet tried):**
+**Still to verify on the live device** (couldn't run here — host SSH key needs an
+interactive 1Password tap, see below): deploy 0.1.5, then add the config entry a
+few times in a row (the racy path) and confirm no `Notify acquired` recurs. If it
+*still* recurs after 0.1.5, the remaining suspect is an acquire held by **another
+process** (the phone/Marpac app on the single slot), which our code can't reach —
+those earlier "candidate fixes" (BlueZ-level `RemoveDevice`/adapter reset; forcing
+`StartNotify` over `AcquireNotify`) become relevant only then.
 
-- Register a **`disconnected_callback`** (bleak-retry-connector's
-  `establish_connection` accepts one) so `stop_notify` also runs on *unexpected*
-  drops, not just graceful `disconnect()` — prevents the leak at the source.
-- **Proactively `stop_notify` before `start_notify`** on every connect, to clear
-  leftover state from this process's prior client.
-- A **BlueZ-level reset** when stuck: `bluetoothctl` `RemoveDevice` (then
-  rediscover) or adapter power-cycle. Heavy (disrupts all BLE) — last resort.
-- Confirm whether bleak is using `AcquireNotify` vs `StartNotify` here and
-  whether forcing `StartNotify` (CCCD-only) avoids the FD-leak class entirely.
-
-**Immediate manual unblock:** reload the HA **Bluetooth** integration (Settings →
-Devices & Services → Bluetooth → ⋮ → Reload) or restart HA — releases the stuck
-acquire so a fresh add succeeds (until it recurs).
+**Immediate manual unblock if stuck pre-0.1.5:** reload the HA **Bluetooth**
+integration (Settings → Devices & Services → Bluetooth → ⋮ → Reload) or restart
+HA — releases the stuck acquire so a fresh add succeeds.
 
 ---
 
@@ -231,4 +231,8 @@ restart). Catch errors right after triggering a setup retry. `/config` also has
 - **v0.1.2** — recover from partial service cache (clear_cache + rediscover).
 - **v0.1.3** — `stop_notify` before graceful `disconnect`.
 - **v0.1.4** — self-heal a stuck `Notify acquired` on connect (reconnect+retry).
-  **Still failing — see CURRENT BUG above.**
+  Insufficient on its own — the leak it tried to recover from was still being
+  *created* by `connect()` (see below).
+- **v0.1.5** — root-cause fix: `connect()` releases notify + disconnects if any
+  step after `establish_connection` fails, so a racy/timed-out `identify()` no
+  longer orphans a connected, notifying client. See the section at the top.
