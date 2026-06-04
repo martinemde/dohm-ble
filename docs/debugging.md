@@ -236,3 +236,39 @@ restart). Catch errors right after triggering a setup retry. `/config` also has
 - **v0.1.5** — root-cause fix: `connect()` releases notify + disconnects if any
   step after `establish_connection` fails, so a racy/timed-out `identify()` no
   longer orphans a connected, notifying client. See the section at the top.
+- **v0.1.6** — re-arm the CCCD before every command (see below). Mirrors the
+  official app; fixes command replies silently going missing on a long-lived
+  link.
+
+---
+
+## Notify goes deaf on a long-lived link — re-arm the CCCD per command (v0.1.6)
+
+**Live-confirmed from the Mac (CoreBluetooth) on 2026-06-03.** Driving the real
+device standalone (`tools`-style bleak script): connect + `start_notify`
+succeeded, then the first `i$` query got **no notification reply** across
+retries — yet every `write_gatt_char(response=True)` was **ATT-acked** by the
+device. So the link was fine both ways; the device had simply **stopped emitting
+notifications**. After re-arming the subscription (on CoreBluetooth, a
+`stop_notify`/`start_notify` toggle — the only way to rewrite the hidden CCCD),
+replies immediately resumed: `M,1$`, `S,02$`, and set `OK$` all came back.
+
+This confirms the long-standing note: **the official app rewrites `01 00` to the
+CCCD (handle `0x001b`) before every command.** The Dohm's TI module drops its
+notify arming on an idle/long-lived link, so a persistent-connection poller (HA)
+eventually sees `get_power`/`get_speed` time out even though the connection is up
+and writes are acked — which the coordinator surfaces as `UpdateFailed`.
+
+**Fix (v0.1.6):** `DohmClient._command()` now calls `_rearm_notify()` first —
+it writes `01 00` to the command characteristic's CCCD (matched by UUID
+`00002902-…`) before each write. Best-effort: backends that hide the CCCD
+(CoreBluetooth) return no descriptor and we fall back to the existing
+`start_notify` subscription. Covered by
+`test_command_rearms_cccd_before_each_command`,
+`test_command_succeeds_when_device_needs_rearm_each_time`,
+`test_command_tolerates_missing_cccd`, and
+`test_command_survives_rearm_write_failure`.
+
+**Note on HA backend:** on BlueZ (and ESPHome proxies) the CCCD *is* exposed, so
+the integration can rewrite it directly like the app — no `stop/start` toggle
+needed (which on BlueZ risks re-tripping `Notify acquired`).

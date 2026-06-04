@@ -11,19 +11,53 @@ def _notify_acquired_error() -> BleakDBusError:
     return BleakDBusError("org.bluez.Error.NotPermitted", ["Notify acquired"])
 
 
+CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb"
+
+
+class FakeDescriptor:
+    def __init__(self, handle):
+        self.handle = handle
+
+
+class FakeCharacteristic:
+    def __init__(self, expose_cccd=True):
+        self._cccd = FakeDescriptor(0x001B) if expose_cccd else None
+
+    def get_descriptor(self, specifier):
+        if specifier == CCCD_UUID:
+            return self._cccd
+        return None
+
+
+class FakeServices:
+    def __init__(self, char):
+        self._char = char
+
+    def get_characteristic(self, _uuid):
+        return self._char
+
+
 class FakeDohm:
     """Stand-in BLE client that responds like the captured device."""
 
-    def __init__(self, device_id="0136C4", speed=2, power=True):
+    def __init__(self, device_id="0136C4", speed=2, power=True,
+                 expose_cccd=True, require_rearm=False):
         self.device_id = device_id
         self.speed = speed
         self.power = power
         self.writes: list[bytes] = []
+        self.cccd_writes: list[bytes] = []
         self._notify = None
         self.is_connected = True
+        self.services = FakeServices(FakeCharacteristic(expose_cccd))
+        # When True, model the real device: notifications go silent until the
+        # CCCD is (re)armed, and each delivered reply disarms them again.
+        self._require_rearm = require_rearm
+        self._armed = not require_rearm
 
     async def start_notify(self, _char, callback):
         self._notify = callback
+        self._armed = True
 
     async def stop_notify(self, _char):
         self._notify = None
@@ -31,10 +65,17 @@ class FakeDohm:
     async def disconnect(self):
         self.is_connected = False
 
+    async def write_gatt_descriptor(self, _handle, data):
+        self.cccd_writes.append(bytes(data))
+        if bytes(data) == b"\x01\x00":
+            self._armed = True
+
     async def write_gatt_char(self, _char, data, response=True):
         self.writes.append(bytes(data))
         reply = self._respond(bytes(data).decode())
-        if reply is not None and self._notify is not None:
+        if reply is not None and self._notify is not None and self._armed:
+            if self._require_rearm:
+                self._armed = False
             self._notify(0, bytearray(reply.encode()))
 
     def _respond(self, text: str) -> str | None:
@@ -222,3 +263,51 @@ async def test_set_power_off_then_on(client, fake):
 async def test_get_power_reflects_device(client, fake):
     fake.power = False
     assert await client.get_power() is False
+
+
+async def test_command_rearms_cccd_before_each_command(client, fake):
+    # The Dohm silently stops emitting notifications on a long-lived link until
+    # its CCCD is re-enabled; the official app rewrites 01 00 to the CCCD before
+    # every command. Each command must do the same so replies don't go missing.
+    fake.cccd_writes.clear()
+    await client.get_power()
+    assert fake.cccd_writes == [b"\x01\x00"]
+
+
+async def test_command_succeeds_when_device_needs_rearm_each_time():
+    # A device that goes notify-deaf until re-armed (and re-deafens after each
+    # reply) must still answer, because the client re-arms before every command.
+    fake = FakeDohm(require_rearm=True)
+
+    async def connector(_ble_device):
+        return fake
+
+    client = DohmClient(ble_device=object(), connector=connector)
+    await client.connect()  # identify() must get its reply through the re-arm
+    assert client.device_id == "0136C4"
+    assert await client.get_speed() == 2
+    assert await client.get_power() is True
+
+
+async def test_command_tolerates_missing_cccd():
+    # Backends that hide the CCCD (e.g. CoreBluetooth) expose no descriptor;
+    # commands must still work, relying on the start_notify subscription.
+    fake = FakeDohm(expose_cccd=False)
+
+    async def connector(_ble_device):
+        return fake
+
+    client = DohmClient(ble_device=object(), connector=connector)
+    await client.connect()
+    assert await client.get_speed() == 2
+    assert fake.cccd_writes == []
+
+
+async def test_command_survives_rearm_write_failure(client, fake):
+    # A failed CCCD rewrite must not break the command: the existing
+    # subscription may already be armed.
+    async def boom(_handle, _data):
+        raise BleakError("cannot write descriptor")
+
+    fake.write_gatt_descriptor = boom
+    assert await client.get_speed() == 2

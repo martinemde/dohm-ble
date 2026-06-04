@@ -18,6 +18,9 @@ from .const import CHARACTERISTIC_UUID, MAX_SPEED, MIN_SPEED
 
 COMMAND_TIMEOUT = 5.0
 
+# Client Characteristic Configuration Descriptor (notify enable bit).
+CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb"
+
 
 def _is_notify_acquired(err: BleakError) -> bool:
     """True for ``org.bluez.Error.NotPermitted: Notify acquired``.
@@ -140,8 +143,25 @@ class DohmClient:
     def _on_notify(self, _sender, data: bytearray) -> None:
         self._queue.put_nowait(bytes(data))
 
+    async def _rearm_notify(self) -> None:
+        # The Dohm goes notify-deaf on a long-lived link until its CCCD is
+        # re-enabled: the device stops emitting notifications even though writes
+        # are still ATT-acked, so command replies silently go missing. The
+        # official app rewrites 01 00 to the CCCD before every command; mirror
+        # that. Best-effort -- some backends (e.g. CoreBluetooth) hide the CCCD,
+        # where the start_notify subscription is the only handle we have.
+        char = self._client.services.get_characteristic(CHARACTERISTIC_UUID)
+        cccd = char.get_descriptor(CCCD_UUID) if char is not None else None
+        if cccd is None:
+            return
+        try:
+            await self._client.write_gatt_descriptor(cccd.handle, b"\x01\x00")
+        except Exception:  # noqa: BLE001 - best-effort; notify may already be armed
+            pass
+
     async def _command(self, payload: bytes):
         async with self._lock:
+            await self._rearm_notify()
             while not self._queue.empty():
                 self._queue.get_nowait()
             await self._client.write_gatt_char(
