@@ -48,7 +48,15 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
             self.hass, self.address, connectable=True
         )
         if ble_device is None:
+            # Distinguishes "the device stopped advertising" (it dorms after ~1h
+            # with no connection) from "we could reach it but the link failed".
             raise UpdateFailed(f"{self.address} is not in range")
+        _LOGGER.debug(
+            "reconnecting to %s via %s (rssi %s)",
+            self.address,
+            getattr(ble_device, "name", "?"),
+            getattr(ble_device, "rssi", "?"),
+        )
         await self.client.connect(ble_device)
 
     async def _async_update_data(self) -> DohmState:

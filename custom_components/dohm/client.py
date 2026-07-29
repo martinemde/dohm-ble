@@ -9,6 +9,8 @@ which works both standalone and inside Home Assistant's Bluetooth stack
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from collections.abc import Awaitable, Callable
 
 from bleak.exc import BleakError
@@ -16,7 +18,17 @@ from bleak.exc import BleakError
 from . import protocol
 from .const import CHARACTERISTIC_UUID, MAX_SPEED, MIN_SPEED
 
-COMMAND_TIMEOUT = 5.0
+_LOGGER = logging.getLogger(__name__)
+
+# Replies can lag well behind the write that triggered them. The write itself
+# is ATT-acked in tens of ms, but the device requests a slow LE connection
+# interval after connecting (power saving), so over BlueZ its notifications only
+# drain every ~5s -- CoreBluetooth keeps the link snappy, BlueZ honors the slow
+# interval. A reply that just misses a tick lands on the next one, so the wait
+# must clear two cadences with margin; 5s (== one cadence) drops replies on a
+# coin flip. Still well under the coordinator's 30s poll, so a truly dead device
+# is reported within one cycle.
+COMMAND_TIMEOUT = 15.0
 
 # Client Characteristic Configuration Descriptor (notify enable bit).
 CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb"
@@ -87,6 +99,7 @@ class DohmClient:
         # allow refreshing it on (re)connect.
         if ble_device is not None:
             self._ble_device = ble_device
+        _LOGGER.debug("connecting to %s", getattr(self._ble_device, "address", "?"))
         self._client = await self._connector(self._ble_device)
         # Once connected, any later failure (notably identify() timing out on
         # this racy single-connection link) must not leak a connected, notifying
@@ -96,6 +109,7 @@ class DohmClient:
         try:
             await self._subscribe()
             await self.identify()
+            _LOGGER.debug("connected; device id %s", self._device_id)
         except BaseException:
             try:
                 await self.disconnect()
@@ -127,6 +141,7 @@ class DohmClient:
         self._client = None
         if client is None:
             return
+        _LOGGER.debug("disconnecting (notifying=%s)", self._notifying)
         # Release BlueZ's per-characteristic notify subscription before dropping
         # the link. Skipping this leaves it "acquired", so the next connect's
         # start_notify fails with org.bluez.Error.NotPermitted: Notify acquired,
@@ -153,21 +168,59 @@ class DohmClient:
         char = self._client.services.get_characteristic(CHARACTERISTIC_UUID)
         cccd = char.get_descriptor(CCCD_UUID) if char is not None else None
         if cccd is None:
+            # Worth logging every time: if the backend in use hides the CCCD,
+            # the v0.1.6 re-arm is silently a no-op and cannot be what keeps
+            # replies flowing (or what fails to).
+            _LOGGER.debug("no CCCD exposed for %s; re-arm skipped", CHARACTERISTIC_UUID)
             return
         try:
             await self._client.write_gatt_descriptor(cccd.handle, b"\x01\x00")
-        except Exception:  # noqa: BLE001 - best-effort; notify may already be armed
-            pass
+        except Exception as err:  # noqa: BLE001 - best-effort; may already be armed
+            _LOGGER.debug("CCCD re-arm failed on handle 0x%04x: %s", cccd.handle, err)
 
     async def _command(self, payload: bytes):
         async with self._lock:
             await self._rearm_notify()
             while not self._queue.empty():
                 self._queue.get_nowait()
-            await self._client.write_gatt_char(
-                CHARACTERISTIC_UUID, payload, response=True
-            )
-            raw = await asyncio.wait_for(self._queue.get(), COMMAND_TIMEOUT)
+            started = time.monotonic()
+            try:
+                await self._client.write_gatt_char(
+                    CHARACTERISTIC_UUID, payload, response=True
+                )
+                acked = time.monotonic()
+                raw = await asyncio.wait_for(self._queue.get(), COMMAND_TIMEOUT)
+                # The ack/reply split is the diagnostic that matters: a device
+                # that acks fast and then never answers has gone notify-deaf,
+                # while a slow ack means the link itself is struggling.
+                _LOGGER.debug(
+                    "%r -> %r (ack %.2fs, reply %.2fs)",
+                    payload,
+                    bytes(raw),
+                    acked - started,
+                    time.monotonic() - acked,
+                )
+            except Exception as err:
+                # The link is unusable but not necessarily *down*: a device that
+                # has gone notify-deaf still acks writes, and a half-open link
+                # still reports is_connected. Either way nothing here reconnects
+                # on its own, so without dropping it the coordinator retries the
+                # same dead client every poll, forever. Rebuild from scratch
+                # instead -- what the official app does when it resumes slowly.
+                # Cancellation is not evidence of a bad link, so it is excluded.
+                _LOGGER.debug(
+                    "%r failed after %.2fs (%s: %s); dropping the link so the "
+                    "next command reconnects",
+                    payload,
+                    time.monotonic() - started,
+                    type(err).__name__,
+                    err,
+                )
+                try:
+                    await self.disconnect()
+                except Exception:  # noqa: BLE001 - best-effort; keep the cause
+                    pass
+                raise
         message = protocol.parse(raw)
         if isinstance(message, protocol.Failure):
             raise DohmCommandError(f"device rejected {payload!r}: {message.code}")

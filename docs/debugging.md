@@ -239,6 +239,70 @@ restart). Catch errors right after triggering a setup retry. `/config` also has
 - **v0.1.6** — re-arm the CCCD before every command (see below). Mirrors the
   official app; fixes command replies silently going missing on a long-lived
   link.
+- **v0.1.7** — drop the link when a command goes unanswered, so a dead-but-
+  "connected" client can no longer wedge the integration forever; plus debug
+  logging (see below).
+
+---
+
+## The integration could never recover a wedged link (v0.1.7)
+
+**Symptom (reported 2026-07-28):** after a day or two of working, the fan goes
+unavailable and *never* comes back on its own — only a manual reload/re-add
+fixes it. The iOS app, by contrast, is slow to resume after a long idle but
+always gets there.
+
+**Evidence from the HA host** (recorder DB, `fan.marpac_dohmb2`, metadata_id
+5703): last healthy `on` at 2026-07-21 17:06 local, `unavailable` at 07-23
+10:28 and 19:47, then entity+device deleted 07-24 00:20. Nothing since. The
+`dohm` config entry still exists but has no entity in the registry, so it never
+got past `async_config_entry_first_refresh()`. Meanwhile the device *was*
+advertising (host adapter saw RSSI −63), so "out of range" was not the blocker.
+
+**Root cause of the non-recovery** (distinct from whatever first breaks the
+link): `DohmCoordinator._ensure_connected()` reconnects only when
+`client.is_connected` is False, and *nothing* ever called `disconnect()` on a
+command failure. Both of this device's known failure modes leave `is_connected`
+reporting True — a notify-deaf device still acks writes, and a half-open link
+still looks up — so every 30 s poll retried the same dead client forever. No
+amount of fixing the *trigger* could restore service, which is why v0.1.3–v0.1.6
+each fixed something real and the integration still wedged.
+
+**Fix (v0.1.7):** `_command()` drops the link (best-effort `disconnect()`, which
+releases notify first) on any command failure, then re-raises. The next poll
+finds `is_connected` False and rebuilds from scratch — the app's behavior.
+`DohmCommandError` (`Failed NN$`) is deliberately *not* a teardown: that is a
+healthy, answering link refusing one command. Covered by
+`test_unanswered_command_drops_the_link`,
+`test_transport_error_during_a_command_drops_the_link`, and
+`test_rejected_command_keeps_the_link`.
+
+**Note:** this makes the integration self-healing but does **not** explain why
+the link goes bad after ~1–2 days. That is still open — hence the logging below.
+
+### Debug logging (v0.1.7)
+
+Enable in `configuration.yaml`:
+
+```yaml
+logger:
+  logs:
+    custom_components.dohm: debug
+```
+
+What each line is for:
+
+- `i$ -> I,0136C4$ (ack 0.03s, reply 4.87s)` — the **ack/reply split** is the
+  key measurement. A fast ack with no reply = notify-deaf. It also settles
+  whether the ~5 s BlueZ notification cadence (the rationale for raising
+  `COMMAND_TIMEOUT` to 15 s) is real on the deployed proxy path.
+- `no CCCD exposed for 00005601-…; re-arm skipped` — if this appears, v0.1.6's
+  re-arm is a **no-op on this backend** and cannot be what keeps replies
+  flowing. Only ever confirmed working on BlueZ; CoreBluetooth hides the CCCD.
+- `… failed after 15.00s (TimeoutError: ); dropping the link …` — the new
+  teardown firing.
+- `reconnecting to 00:22:A3:01:36:C4 via … (rssi …)` — a rebuild attempt, with
+  the signal level HA saw.
 
 ---
 
