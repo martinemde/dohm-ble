@@ -79,3 +79,7 @@ uv run pytest
 
 `tools/` holds the BLE exploration helpers used to map the protocol
 (`probe.py`, `explore.py`, `extract_writes.py`).
+
+## License
+
+[MIT](LICENSE).
