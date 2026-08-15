@@ -12,6 +12,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from functools import partial
 
 from bleak.exc import BleakError
 
@@ -62,11 +63,24 @@ class DohmRebondUnsupported(DohmError):
     """
 
 
-async def _default_connector(ble_device):
+async def _default_connector(ble_device, *, ble_device_callback=None):
+    """Connect, retrying against a *fresh* BLEDevice each attempt.
+
+    Connecting is racy on this device -- the first attempt often comes back
+    ``le-connection-abort-by-local`` -- so ``establish_connection`` retrying is
+    essential. But retrying is only half of it: without ``ble_device_callback``
+    every attempt reuses the same BLEDevice snapshot, which may be minutes stale
+    by the time we get here. The callback re-reads Home Assistant's freshest
+    advertisement between attempts, which is what the phone app does when it
+    scans before connecting.
+    """
     from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
     client = await establish_connection(
-        BleakClientWithServiceCache, ble_device, ble_device.address
+        BleakClientWithServiceCache,
+        ble_device,
+        ble_device.address,
+        ble_device_callback=ble_device_callback,
     )
     # A connection cut short (e.g. the device's brief connectable window) can
     # leave a partial service cache that hides the command characteristic. If
@@ -75,7 +89,10 @@ async def _default_connector(ble_device):
         await client.clear_cache()
         await client.disconnect()
         client = await establish_connection(
-            BleakClientWithServiceCache, ble_device, ble_device.address
+            BleakClientWithServiceCache,
+            ble_device,
+            ble_device.address,
+            ble_device_callback=ble_device_callback,
         )
     return client
 
@@ -86,9 +103,14 @@ class DohmClient:
         ble_device,
         *,
         connector: Callable[[object], Awaitable[object]] | None = None,
+        ble_device_callback: Callable[[], object] | None = None,
     ) -> None:
         self._ble_device = ble_device
-        self._connector = connector or _default_connector
+        # Bound into the default connector rather than passed through the
+        # connector signature, so an injected test connector stays one-argument.
+        self._connector = connector or partial(
+            _default_connector, ble_device_callback=ble_device_callback
+        )
         self._client = None
         self._notifying = False
         self._device_id: str | None = None

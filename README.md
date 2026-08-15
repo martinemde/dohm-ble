@@ -10,8 +10,9 @@ from the official app; see [`docs/protocol.md`](docs/protocol.md) and the
 > airflow — and volume is something the rest of Home Assistant already
 > understands. **This changes the entity ID**, so any automation, script, or
 > dashboard card referring to `fan.<your dohm>` needs to point at
-> `media_player.<your dohm>` instead. The stale fan entity is removed for you
-> on first start after the upgrade.
+> `media_player.<your dohm>` instead. The old `fan.*` entity is left behind in
+> the registry as unavailable — delete it yourself from **Settings → Devices &
+> Services → Entities**.
 
 ## Install (HACS)
 

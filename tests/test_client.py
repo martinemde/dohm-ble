@@ -425,7 +425,7 @@ async def test_rebond_clears_the_stored_bond_then_pairs():
     assert "paired again" in outcome
 
 
-async def test_rebond_refreshes_the_ble_device():
+async def test_rebond_refreshes_theFakeBLEDevice():
     # Home Assistant's BLEDevice can change between connections, and by the time
     # we escalate ours is several failed polls stale. The coordinator hands in a
     # freshly resolved one, which must be what we connect with.
@@ -537,3 +537,60 @@ async def test_rejected_command_keeps_the_link(client, fake):
 
     assert client.is_connected is True
     assert fake.is_connected is True
+
+
+# --- Connecting against a fresh device ---------------------------------------
+
+class FakeBLEDevice:
+    address = "00:22:A3:01:36:C4"
+
+async def test_default_connector_refreshes_the_device_between_attempts(monkeypatch):
+    """The BLEDevice we hold can be minutes stale by the time we reconnect.
+
+    establish_connection retries -- essential, since the first attempt often
+    comes back le-connection-abort-by-local -- but without ble_device_callback
+    every retry reuses the same stale snapshot. Forwarding the callback is what
+    makes the retries look for the device the way the phone app does.
+    """
+    import bleak_retry_connector
+
+    calls = []
+
+    class FakeConnected:
+        def __init__(self):
+            self.services = FakeServices(FakeCharacteristic())
+
+    async def fake_establish(client_class, device, name, **kwargs):
+        calls.append(kwargs.get("ble_device_callback"))
+        return FakeConnected()
+
+    monkeypatch.setattr(bleak_retry_connector, "establish_connection", fake_establish)
+
+    def refresh():
+        return "fresh-device"
+
+    client = DohmClient(ble_device=FakeBLEDevice(), ble_device_callback=refresh)
+    await client._connector(client._ble_device)
+
+    assert calls == [refresh]
+
+
+async def test_default_connector_without_a_callback_still_connects(monkeypatch):
+    import bleak_retry_connector
+
+    calls = []
+
+    class FakeConnected:
+        def __init__(self):
+            self.services = FakeServices(FakeCharacteristic())
+
+    async def fake_establish(client_class, device, name, **kwargs):
+        calls.append(kwargs.get("ble_device_callback"))
+        return FakeConnected()
+
+    monkeypatch.setattr(bleak_retry_connector, "establish_connection", fake_establish)
+
+    client = DohmClient(ble_device=FakeBLEDevice())
+    await client._connector(client._ble_device)
+
+    assert calls == [None]
