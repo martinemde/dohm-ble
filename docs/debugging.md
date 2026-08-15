@@ -242,6 +242,9 @@ restart). Catch errors right after triggering a setup retry. `/config` also has
 - **v0.1.7** — drop the link when a command goes unanswered, so a dead-but-
   "connected" client can no longer wedge the integration forever; plus debug
   logging (see below).
+- **v0.1.8** — clear a stale bond and re-pair after 3 consecutive failed polls,
+  and raise an HA repair issue telling the user to hold the top button. See
+  below.
 
 ---
 
@@ -303,6 +306,82 @@ What each line is for:
   teardown firing.
 - `reconnecting to 00:22:A3:01:36:C4 via … (rssi …)` — a rebuild attempt, with
   the signal level HA saw.
+
+---
+
+## A desynced bond was unrecoverable — clear it and re-pair (v0.1.8)
+
+**Symptom (2026-08-14):** the integration could not be re-added at all, and
+before that it had stopped working entirely. Two separate problems stacked.
+
+**The re-add blocker (not a BLE problem):** the `dohm` config entry still existed
+in `/config/.storage/core.config_entries` with `"disabled_by": "user"`.
+`config_flow.py:46` and `:72` both call `_abort_if_unique_id_configured()`, which
+matches on unique_id regardless of whether the existing entry is disabled — so
+every add attempt, discovered *or* manual, aborted `already_configured` before
+touching Bluetooth. Disabled entries are hidden in the UI unless you toggle "show
+disabled", so the thing doing the blocking is invisible. **Check this first when
+an add silently refuses:**
+
+```bash
+ssh homeassistant.local 'python3 -c "
+import json
+d=json.load(open(\"/config/.storage/core.config_entries\"))
+print([(e[\"title\"],e[\"disabled_by\"]) for e in d[\"data\"][\"entries\"] if e[\"domain\"]==\"dohm\"])"'
+```
+
+**The underlying failure — bond desync.** The Dohm only emits notifications over
+an encrypted link, and it stores exactly **one** bond. Its top button grants a
+*new* bond, evicting the old one. So troubleshooting by holding the button
+actively destroys the pairing the proxy is using. Once that happens:
+
+- `ble_client_base.cpp` → `ESP_GAP_BLE_AUTH_CMPL_EVT` with `success == false`
+  calls `log_error_("auth fail reason", ...)` **and nothing else**. ESPHome never
+  calls `esp_ble_remove_bond_device`, so the stale LTK is retried forever.
+- **`esphome run` / OTA preserves NVS**, so reflashing the proxy does *not*
+  clear it. That ritual was always a no-op.
+
+Structurally the same bug as v0.1.7 — retrying a dead thing forever because
+nothing tears it down — one layer lower, in someone else's C++. Worth filing
+upstream; not Dohm-specific.
+
+**The lever:** `bluetooth_proxy.cpp:246` handles
+`BLUETOOTH_DEVICE_REQUEST_TYPE_UNPAIR` by calling
+`esp_ble_remove_bond_device(address)`, per-MAC. `bleak_esphome`'s
+`ESPHomeClient` exposes it as `unpair()` (with `pair()` alongside). Both need the
+`PAIRING` feature flag (ESPHome ≥ 2024.3.0) and both require an active
+connection — fine here, since connect *succeeds*; only encryption/notify fails.
+
+**Fix (v0.1.8):** `DohmClient.rebond()` opens its own short-lived connection,
+calls `unpair()` then `pair()`, and drops the link so the next poll rebuilds
+normally. `DohmCoordinator` counts consecutive failed polls and escalates once
+per outage at `REBOND_AFTER_FAILURES = 3` (90s), then raises a `stale_bond`
+repair issue telling the user to hold the top button — deleted again on the next
+successful poll, so a self-healed outage stays silent. "Not in range" is
+deliberately excluded from the count: the device dorms after ~1h idle and that
+says nothing about the bond.
+
+Covered by `test_rebond_clears_the_stored_bond_then_pairs`,
+`test_rebond_drops_its_own_link`,
+`test_rebond_reports_a_failed_repair_without_raising`,
+`test_rebond_unsupported_when_the_backend_has_no_unpair`,
+`test_rebond_unsupported_when_unpair_is_not_implemented`, and
+`test_rebond_refreshes_the_ble_device`.
+
+**Still to verify on the live device — the open question:** whether `pair()`
+succeeds when the Dohm is **not** in pairing mode. If it only grants bonds with
+the button held, `rebond()` can never be fully hands-off and the repair issue is
+the real feature. `rebond()` returns its outcome as a string and the coordinator
+logs it at WARNING for exactly this reason — the first real escalation answers it.
+
+**Known limitation:** escalation only fires for a *running* integration. If setup
+itself fails, HA retries `async_setup_entry`, which builds a fresh coordinator
+each time, so `_failures` resets to 0 and the threshold is never reached.
+Recovering a Dohm that won't set up at all is still manual (button + re-add).
+
+**Manual equivalent, if you need it before v0.1.8 escalates:** clearing one bond
+no longer needs `esptool.py erase_flash` — that was overkill. The targeted call
+is the proxy's `UNPAIR` request for `00:22:A3:01:36:C4`.
 
 ---
 

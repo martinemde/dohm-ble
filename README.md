@@ -16,6 +16,26 @@ from the official app; see [`docs/protocol.md`](docs/protocol.md) and the
    then select it. After this one-time pairing, Home Assistant reconnects on its
    own.
 
+> **One controller at a time.** The Dohm stores exactly one pairing, and the top
+> button *grants a new one*, replacing whatever was there. That button is only
+> for pairing — it plays no part in normal operation, so pressing it while
+> troubleshooting will break a working setup. If the phone app has the pairing,
+> forget the Dohm there before adding it here.
+
+## Troubleshooting
+
+- **It connects but never responds.** The Dohm only replies over a paired
+  (encrypted) link, so this means the stored pairing no longer matches. Hold the
+  top button ~5 seconds; the integration clears the stale pairing and re-pairs on
+  its own within about a minute, and raises a repair notification if it can't.
+- **Adding it does nothing / says it's already configured.** An existing config
+  entry is blocking the add, and disabled entries are hidden by default. Turn on
+  *show disabled entries* under **Settings → Devices & Services**, then delete
+  the old one before re-adding.
+- **It went unavailable and stayed there.** Check the logs for
+  `custom_components.dohm`; the version history and diagnostic recipes are in
+  [`docs/debugging.md`](docs/debugging.md).
+
 ## What you get
 
 - A **fan** entity: turn on/off and set speed across the device's 10 levels

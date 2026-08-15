@@ -6,7 +6,11 @@ import pytest
 from bleak.exc import BleakDBusError, BleakError
 
 from custom_components.dohm import client as client_module
-from custom_components.dohm.client import DohmClient, DohmCommandError
+from custom_components.dohm.client import (
+    DohmClient,
+    DohmCommandError,
+    DohmRebondUnsupported,
+)
 
 
 def _notify_acquired_error() -> BleakDBusError:
@@ -50,6 +54,9 @@ class FakeDohm:
         self.power = power
         self.writes: list[bytes] = []
         self.cccd_writes: list[bytes] = []
+        # Ordered record of pair/unpair calls, as the ESPHome proxy backend
+        # exposes them (BluetoothProxyFeature.PAIRING).
+        self.bond_calls: list[str] = []
         self._notify = None
         self.is_connected = True
         self.services = FakeServices(FakeCharacteristic(expose_cccd))
@@ -71,6 +78,12 @@ class FakeDohm:
 
     async def disconnect(self):
         self.is_connected = False
+
+    async def unpair(self):
+        self.bond_calls.append("unpair")
+
+    async def pair(self):
+        self.bond_calls.append("pair")
 
     async def write_gatt_descriptor(self, _handle, data):
         self.cccd_writes.append(bytes(data))
@@ -392,6 +405,124 @@ async def test_transport_error_during_a_command_drops_the_link(client, fake):
         await client.get_power()
 
     assert client.is_connected is False
+    assert fake.is_connected is False
+
+
+async def test_rebond_clears_the_stored_bond_then_pairs():
+    # The escalation for a link that connects and acks writes but never answers:
+    # the controller holds a bond key the device no longer honors. ESPHome's
+    # firmware only logs the auth failure and never removes the bond, so it must
+    # be cleared from this side -- unpair first, then pair, in that order.
+    fake = FakeDohm()
+
+    async def connector(_ble_device):
+        return fake
+
+    client = DohmClient(ble_device=object(), connector=connector)
+    outcome = await client.rebond()
+
+    assert fake.bond_calls == ["unpair", "pair"]
+    assert "paired again" in outcome
+
+
+async def test_rebond_refreshes_the_ble_device():
+    # Home Assistant's BLEDevice can change between connections, and by the time
+    # we escalate ours is several failed polls stale. The coordinator hands in a
+    # freshly resolved one, which must be what we connect with.
+    seen = []
+
+    async def connector(ble_device):
+        seen.append(ble_device)
+        return FakeDohm()
+
+    fresh = object()
+    client = DohmClient(ble_device=object(), connector=connector)
+    await client.rebond(fresh)
+
+    assert seen == [fresh]
+
+
+async def test_rebond_drops_its_own_link():
+    # rebond() runs on a short-lived connection of its own (unpair/pair are only
+    # valid while connected, and the failure that got us here already tore the
+    # link down). It must not leave that connection held: the device takes one
+    # central at a time, so a leak here blocks the reconnect it exists to enable.
+    fake = FakeDohm()
+
+    async def connector(_ble_device):
+        return fake
+
+    client = DohmClient(ble_device=object(), connector=connector)
+    await client.rebond()
+
+    assert fake.is_connected is False
+    assert client.is_connected is False  # never adopted as the live client
+
+
+async def test_rebond_reports_a_failed_repair_without_raising():
+    # Removing a bond can itself drop the link, and the device may only grant a
+    # new one in pairing mode (top button). Clearing the stale key is the half
+    # that always helps, so a failed pair() is reported, not raised -- the
+    # coordinator still needs to log the outcome and tell the user to press it.
+    fake = FakeDohm()
+
+    async def boom():
+        fake.bond_calls.append("pair")
+        raise BleakError("Pairing failed due to error: 133")
+
+    fake.pair = boom
+
+    async def connector(_ble_device):
+        return fake
+
+    client = DohmClient(ble_device=object(), connector=connector)
+    outcome = await client.rebond()
+
+    assert fake.bond_calls == ["unpair", "pair"]
+    assert "cleared the stored bond" in outcome
+    assert "top button" in outcome
+    assert fake.is_connected is False
+
+
+async def test_rebond_unsupported_when_the_backend_has_no_unpair():
+    # Host BlueZ/CoreBluetooth via plain bleak, or proxy firmware older than
+    # ESPHome 2024.3.0, offer no way to clear a bond. Must fail distinguishably
+    # so the coordinator reports "can't" rather than "tried and failed".
+    class NoPairing(FakeDohm):
+        pair = None
+        unpair = None
+
+    fake = NoPairing()
+
+    async def connector(_ble_device):
+        return fake
+
+    client = DohmClient(ble_device=object(), connector=connector)
+    with pytest.raises(DohmRebondUnsupported):
+        await client.rebond()
+
+    assert fake.is_connected is False  # still no leaked link
+
+
+async def test_rebond_unsupported_when_unpair_is_not_implemented():
+    # bleak's CoreBluetooth backend defines unpair() but raises
+    # NotImplementedError; bleak_esphome does the same when the proxy firmware
+    # doesn't advertise the PAIRING feature flag.
+    fake = FakeDohm()
+
+    async def not_implemented():
+        raise NotImplementedError("Unpairing is not available in this version ESPHome")
+
+    fake.unpair = not_implemented
+
+    async def connector(_ble_device):
+        return fake
+
+    client = DohmClient(ble_device=object(), connector=connector)
+    with pytest.raises(DohmRebondUnsupported):
+        await client.rebond()
+
+    assert fake.bond_calls == []  # never got as far as pairing
     assert fake.is_connected is False
 
 

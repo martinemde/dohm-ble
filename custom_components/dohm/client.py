@@ -53,6 +53,15 @@ class DohmCommandError(DohmError):
     """The device rejected a command (replied ``Failed NN$``)."""
 
 
+class DohmRebondUnsupported(DohmError):
+    """The Bluetooth backend can't clear a stored bond.
+
+    Raised for host BlueZ/CoreBluetooth (no proxy-style unpair) and for ESPHome
+    firmware older than 2024.3.0, which doesn't advertise the ``PAIRING``
+    feature flag.
+    """
+
+
 async def _default_connector(ble_device):
     from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
@@ -154,6 +163,62 @@ class DohmClient:
                 pass
             self._notifying = False
         await client.disconnect()
+
+    async def rebond(self, ble_device=None) -> str:
+        """Clear the stored bond and pair again; returns what actually happened.
+
+        The escalation for a link that connects and ATT-acks writes but never
+        answers. The Dohm only emits notifications over an encrypted link, so
+        that signature means the controller is holding a bond key the device no
+        longer honors -- typically because the device's top button (which grants
+        a *new* bond, and it keeps only one) was pressed since we bonded.
+
+        Reconnecting can't fix it: ESPHome's firmware only *logs* an
+        authentication failure (``ble_client_base.cpp``, ``ESP_GAP_BLE_AUTH_CMPL_EVT``)
+        and never calls ``esp_ble_remove_bond_device``, so the stale key is
+        retried forever. Clearing it from this side is the only way back short of
+        erasing the proxy's flash -- and reflashing does *not* do it, since NVS
+        survives an OTA.
+
+        Runs on its own short-lived connection: unpair/pair are only valid while
+        connected, and whatever escalated to here already dropped the link. The
+        link is dropped again afterwards so the next poll rebuilds it normally.
+        """
+        # As with connect(): Home Assistant's BLEDevice can change between
+        # connections, and the one we hold may be several failed polls stale.
+        if ble_device is not None:
+            self._ble_device = ble_device
+        client = await self._connector(self._ble_device)
+        try:
+            unpair = getattr(client, "unpair", None)
+            pair = getattr(client, "pair", None)
+            if unpair is None or pair is None:
+                raise DohmRebondUnsupported(
+                    f"{type(client).__name__} exposes no unpair/pair"
+                )
+            try:
+                await unpair()
+            except NotImplementedError as err:
+                raise DohmRebondUnsupported(str(err) or type(client).__name__) from err
+            # Whether the device grants a fresh bond without being in pairing
+            # mode (top button held ~5s) is the open question this return value
+            # exists to answer, so the outcome is reported rather than raised:
+            # dropping the stale key is the half that always helps, and removing
+            # a bond can itself drop the link, which would fail pair() here even
+            # when the device would have accepted it on a fresh connection.
+            try:
+                await pair()
+            except Exception as err:  # noqa: BLE001 - reported, not fatal
+                return (
+                    f"cleared the stored bond; re-pair failed "
+                    f"({type(err).__name__}: {err}) -- hold the top button ~5s"
+                )
+            return "cleared the stored bond and paired again"
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:  # noqa: BLE001 - best-effort; keep the real result
+                pass
 
     def _on_notify(self, _sender, data: bytearray) -> None:
         self._queue.put_nowait(bytes(data))

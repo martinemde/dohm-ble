@@ -17,5 +17,11 @@
       "no_devices_found": "No unconfigured Dohm devices found. Hold the top button for ~5 seconds to make it discoverable, then try again.",
       "already_configured": "This Dohm is already configured."
     }
+  },
+  "issues": {
+    "stale_bond": {
+      "title": "Dohm needs re-pairing",
+      "description": "Home Assistant can reach the Dohm at {address}, but it connects without ever answering. The Dohm only replies over a paired (encrypted) link, so its pairing key no longer matches the one Home Assistant holds — usually because the top button was pressed since pairing, which grants a new key and replaces the old one.\n\nHold the top button on the Dohm for ~5 seconds to put it back into pairing mode. It should recover within a minute.\n\nIf it doesn't, delete this integration and add it again while holding the button. The Dohm stores only one pairing at a time, so if you've since paired the phone app, that has taken the slot — forget the Dohm there first."
+    }
   }
 }
