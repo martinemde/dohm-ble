@@ -35,9 +35,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: DohmConfigEntry) -> bool
     coordinator = DohmCoordinator(hass, DohmClient(ble_device), address)
     await coordinator.async_config_entry_first_refresh()
 
+    _remove_legacy_fan_entity(hass, entry)
+
     entry.runtime_data = coordinator
-    await hass.config_entries.async_forward_entry_setups(entry, [Platform.FAN])
+    await hass.config_entries.async_forward_entry_setups(entry, [Platform.MEDIA_PLAYER])
     return True
+
+
+def _remove_legacy_fan_entity(hass: HomeAssistant, entry: DohmConfigEntry) -> None:
+    """Drop the fan entity left behind by versions before 0.2.0.
+
+    The Dohm moved to media_player, and a registry entry's domain is part of
+    its identity, so there is nothing to rename -- without this the old
+    fan.* entity lingers forever as unavailable.
+    """
+    from homeassistant.const import Platform
+    from homeassistant.helpers import entity_registry as er
+
+    from .const import DOMAIN
+
+    if entry.unique_id is None:
+        return
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id(Platform.FAN, DOMAIN, entry.unique_id)
+    if entity_id:
+        registry.async_remove(entity_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: DohmConfigEntry) -> bool:
@@ -45,7 +67,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: DohmConfigEntry) -> boo
     from homeassistant.const import Platform
 
     unloaded = await hass.config_entries.async_unload_platforms(
-        entry, [Platform.FAN]
+        entry, [Platform.MEDIA_PLAYER]
     )
     if unloaded:
         await entry.runtime_data.client.disconnect()
