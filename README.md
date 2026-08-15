@@ -49,7 +49,9 @@ from the official app; see [`docs/protocol.md`](docs/protocol.md) and the
 
 - A **media player** entity (device class *speaker*): turn on/off and set volume
   across the device's 10 levels. Volume up/down step exactly one level rather
-  than the usual 10%, so every press is a setting the device actually has.
+  than the usual 10%, so every press is a setting the device actually has, and
+  the control snaps immediately to the level the Dohm took — drop the slider at
+  43% and it moves to 50% right away rather than after a round-trip.
 - Voice control via the standard volume intents — *"set the white noise to 40
   percent"*, *"turn the white noise down"* — which a fan entity can't answer.
 - A proper **device** entry (manufacturer Marpac, model Dohm), with firmware/

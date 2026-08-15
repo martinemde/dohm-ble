@@ -45,7 +45,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DohmConfigEntry) -> bool
             hass, address, connectable=True
         ),
     )
-    coordinator = DohmCoordinator(hass, client, address, health)
+    coordinator = DohmCoordinator(hass, entry, client, address, health)
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator

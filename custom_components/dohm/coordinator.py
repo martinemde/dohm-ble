@@ -18,6 +18,7 @@ from homeassistant.components.bluetooth import (
     async_process_advertisements,
 )
 from homeassistant.components.bluetooth.match import BluetoothCallbackMatcher
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -51,12 +52,19 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
     def __init__(
         self,
         hass: HomeAssistant,
+        config_entry: ConfigEntry,
         client: DohmClient,
         address: str,
         health: DohmHealth,
     ) -> None:
+        # config_entry is passed explicitly rather than left to the ContextVar
+        # fallback, which Home Assistant removes in 2026.8.
         super().__init__(
-            hass, _LOGGER, name=DOMAIN, update_interval=UPDATE_INTERVAL
+            hass,
+            _LOGGER,
+            config_entry=config_entry,
+            name=DOMAIN,
+            update_interval=UPDATE_INTERVAL,
         )
         self.client = client
         self.address = address
@@ -177,9 +185,36 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
     async def async_set_power(self, on: bool) -> None:
         await self._ensure_connected()
         await self.client.set_power(on)
+        self._async_snap(power=on)
         await self.async_request_refresh()
 
     async def async_set_speed(self, speed: int) -> None:
         await self._ensure_connected()
         await self.client.set_speed(speed)
+        self._async_snap(speed=speed)
         await self.async_request_refresh()
+
+    def _async_snap(
+        self, *, power: bool | None = None, speed: int | None = None
+    ) -> None:
+        """Publish the value the device actually took, without waiting for a poll.
+
+        The Dohm has ten levels, so a slider dropped at 43% becomes level 5 --
+        50%. Leaving the control at 43% until the confirming poll comes back
+        reads as if the device accepted 43%, which it never can. Publishing the
+        accepted value here makes the control snap to what the Dohm is really
+        doing, and says so at the moment of the change rather than a BLE
+        round-trip later.
+
+        Optimistic only as far as the ack: the command was already ack'd by the
+        time we get here, and the refresh below still overwrites this with what
+        the device reports.
+        """
+        if self.data is None:
+            return
+        self.async_set_updated_data(
+            DohmState(
+                power=self.data.power if power is None else power,
+                speed=self.data.speed if speed is None else speed,
+            )
+        )
