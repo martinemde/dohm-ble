@@ -89,3 +89,17 @@ def test_parse_rejects_payload_without_terminator():
 def test_parse_unknown_message_raises():
     with pytest.raises(ValueError):
         protocol.parse(b"Z,99$")
+
+
+def test_device_id_is_the_lower_three_address_bytes():
+    # docs/debugging.md: the Dohm at 00:22:A3:01:36:C4 answers to 0136C4, and
+    # commands that carry any other id are rejected. Deriving it is what lets
+    # the connect path skip i$ entirely.
+    assert protocol.device_id_from_address("00:22:A3:01:36:C4") == "0136C4"
+
+
+def test_device_id_normalises_separators_and_case():
+    # Home Assistant hands addresses over in upper-case colon form, but ESPHome
+    # proxies and bleak backends have both been seen using dashes or lower case.
+    for address in ("00:22:a3:01:36:c4", "00-22-A3-01-36-C4", "0022A30136C4"):
+        assert protocol.device_id_from_address(address) == "0136C4"

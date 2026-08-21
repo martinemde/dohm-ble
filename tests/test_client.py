@@ -20,6 +20,10 @@ def _notify_acquired_error() -> BleakDBusError:
 
 CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb"
 
+# What device_id_from_address() yields for the unit the captures came from,
+# MAC 00:22:A3:01:36:C4, and what FakeDohm answers to.
+DEVICE_ID = "0136C4"
+
 
 class FakeDescriptor:
     def __init__(self, handle):
@@ -141,41 +145,36 @@ async def client(fake):
     async def connector(_ble_device):
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
     await client.connect()
     return client
 
 
-async def test_connect_learns_device_id(client):
-    assert client.device_id == "0136C4"
+def _mute_first(fake, count=1):
+    """Make the fake swallow its first `count` replies, acking the write anyway.
 
-
-async def test_connect_skips_identify_when_device_id_is_already_known():
-    # Live: after a disconnect, i$ can stay silent for 90s while S,<id>,n$
-    # still gets OK$. Requiring identify() on every connect drops that link
-    # and forces pairing. A stored id must be enough to come up.
-    fake = FakeDohm()
+    This is the live failure: the device ATT-acks immediately and the notify
+    lands seconds later (14.67s measured) or not at all.
+    """
     original = fake.write_gatt_char
+    swallowed = {"n": 0}
 
-    async def silent_identify(char, data, response=True):
-        payload = bytes(data)
-        if payload == b"i$":
-            fake.writes.append(payload)
+    async def maybe_reply(char, data, response=True):
+        if swallowed["n"] < count:
+            swallowed["n"] += 1
+            fake.writes.append(bytes(data))
             return
         await original(char, data, response=response)
 
-    fake.write_gatt_char = silent_identify
+    fake.write_gatt_char = maybe_reply
+    return swallowed
 
-    async def connector(_ble_device):
-        return fake
 
-    client = DohmClient(
-        ble_device=object(), connector=connector, device_id="0136C4"
-    )
-    await client.connect()
-
-    assert client.device_id == "0136C4"
-    assert client.is_connected is True
+async def test_connect_never_asks_the_device_for_its_id(client, fake):
+    # i$ is the opening command and the slowest one there is. The id is the
+    # lower three MAC bytes, so it is handed in rather than asked for, and the
+    # connect path does not spend a round trip -- or a bond -- learning it.
+    assert client.device_id == DEVICE_ID
     assert b"i$" not in fake.writes
     assert await client.get_speed() == 2
 
@@ -224,7 +223,7 @@ async def test_connect_recovers_from_stuck_notify_acquired():
             return stuck
         return clean
 
-    client = DohmClient(ble_device=object(), connector=connector)
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
     await client.connect()
 
     assert calls["n"] == 2  # reconnected once to clear the stuck subscription
@@ -232,29 +231,25 @@ async def test_connect_recovers_from_stuck_notify_acquired():
     assert client.device_id == "0136C4"
 
 
-async def test_connect_cleans_up_when_a_later_step_fails():
-    # connect() gets past start_notify, then identify() sends the first command
-    # and waits for a reply on a racy, single-connection link where replies can
-    # time out. If that fails, connect() must release the notify subscription
-    # and drop the link before propagating. Leaking a connected, notifying
-    # client keeps BlueZ's notify acquired (the link stays up, so the FD is
-    # never freed), and the *next* setup's start_notify is refused with
-    # NotPermitted: Notify acquired -- the leak v0.1.2-0.1.4 chased downstream.
+async def test_connect_cleans_up_when_subscribe_fails():
+    # connect() must never leave a connected client behind. A held link keeps
+    # BlueZ's notify subscription acquired (the link is up, so the FD is never
+    # freed), and the *next* setup's start_notify is refused with NotPermitted:
+    # Notify acquired -- the leak v0.1.2-0.1.4 chased downstream.
     fake = FakeDohm()
 
-    async def no_reply(_char, _data, response=True):
-        raise TimeoutError("no reply on racy link")
+    async def boom(_char, _cb):
+        raise TimeoutError("subscribe went nowhere")
 
-    fake.write_gatt_char = no_reply
+    fake.start_notify = boom
 
     async def connector(_ble_device):
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
     with pytest.raises(TimeoutError):
         await client.connect()
 
-    assert fake._notify is None  # notify subscription released
     assert fake.is_connected is False  # link dropped, BlueZ frees the acquire
     assert client.is_connected is False
 
@@ -265,19 +260,19 @@ async def test_connect_cleanup_failure_preserves_original_error():
     # not a confusing disconnect error.
     fake = FakeDohm()
 
-    async def no_reply(_char, _data, response=True):
-        raise TimeoutError("no reply on racy link")
+    async def boom(_char, _cb):
+        raise TimeoutError("subscribe went nowhere")
 
     async def cleanup_boom():
         raise RuntimeError("link already gone")
 
-    fake.write_gatt_char = no_reply
+    fake.start_notify = boom
     fake.disconnect = cleanup_boom
 
     async def connector(_ble_device):
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
     with pytest.raises(TimeoutError):
         await client.connect()
 
@@ -292,7 +287,7 @@ async def test_connect_reraises_unrelated_notify_errors():
         fake.start_notify = boom
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
     with pytest.raises(BleakError):
         await client.connect()
 
@@ -342,9 +337,8 @@ async def test_command_succeeds_when_device_needs_rearm_each_time():
     async def connector(_ble_device):
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
-    await client.connect()  # identify() must get its reply through the re-arm
-    assert client.device_id == "0136C4"
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
+    await client.connect()
     assert await client.get_speed() == 2
     assert await client.get_power() is True
 
@@ -357,7 +351,7 @@ async def test_command_tolerates_missing_cccd():
     async def connector(_ble_device):
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
     await client.connect()
     assert await client.get_speed() == 2
     assert fake.cccd_writes == []
@@ -385,9 +379,8 @@ async def test_reply_slower_than_the_old_ceiling_still_succeeds(monkeypatch):
     async def connector(_ble_device):
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
-    await client.connect()  # identify() waits out the delayed reply
-    assert client.device_id == "0136C4"
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
+    await client.connect()
     assert await client.get_speed() == 2
 
 
@@ -399,48 +392,59 @@ async def test_command_timeout_clears_two_notify_cadences():
     assert client_module.COMMAND_TIMEOUT >= 12.0
 
 
-async def test_first_command_waits_out_the_slow_opening_notify():
-    # Live: i$ after start_notify replied in 14.67s, then every later command
-    # in 0.00s. COMMAND_TIMEOUT is 15s, so identify lost that race, dropped the
-    # link, and the next connect was notify-deaf until the top button. The first
-    # command has to wait longer than that measured opening reply.
-    assert client_module.FIRST_COMMAND_TIMEOUT > client_module.COMMAND_TIMEOUT
-    assert client_module.FIRST_COMMAND_TIMEOUT >= 25.0
-    assert client_module.IDENTIFY_ATTEMPTS >= 2
+async def test_the_opening_command_waits_out_the_slow_first_notify():
+    # Live: the first reply after start_notify took 14.67s, then every command
+    # after it took 0.00s. COMMAND_TIMEOUT is 15s, so the opening command lost
+    # that race, dropped the link, and the next connect was notify-deaf until
+    # the top button. It has to outwait that measured opening reply, and get
+    # more than one try at it.
+    assert client_module.OPENING_TIMEOUT > client_module.COMMAND_TIMEOUT
+    assert client_module.OPENING_TIMEOUT >= 25.0
+    assert client_module.OPENING_ATTEMPTS >= 2
 
 
-async def test_identify_retries_on_the_same_link_when_the_first_i_is_silent(
-    monkeypatch,
-):
-    # Dropping the link after a silent first i$ is what forces a re-pair. The
-    # second i$ on the same connection must be allowed to succeed.
-    monkeypatch.setattr(client_module, "FIRST_COMMAND_TIMEOUT", 0.05)
+async def test_a_slow_opening_command_keeps_the_link(monkeypatch):
+    # The regression this whole change exists for. Whichever command goes first
+    # on a fresh link pays the slow-first-notify cost -- it is a property of the
+    # link, not of i$. Dropping the link over it is what cost us the bond, and
+    # the bond only comes back with a top-button press.
+    monkeypatch.setattr(client_module, "OPENING_TIMEOUT", 0.05)
     monkeypatch.setattr(client_module, "COMMAND_TIMEOUT", 0.05)
     fake = FakeDohm()
-    original = fake.write_gatt_char
-    seen = {"i": 0}
-
-    async def skip_first_identify(char, data, response=True):
-        payload = bytes(data)
-        if payload == b"i$":
-            seen["i"] += 1
-            if seen["i"] == 1:
-                fake.writes.append(payload)
-                return
-        await original(char, data, response=response)
-
-    fake.write_gatt_char = skip_first_identify
 
     async def connector(_ble_device):
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
     await client.connect()
+    _mute_first(fake)  # the opening command goes unanswered, exactly once
 
-    assert seen["i"] == 2
-    assert client.device_id == "0136C4"
-    assert fake.is_connected is True
+    assert await client.get_power() is True  # second attempt, same connection
     assert client.is_connected is True
+    assert fake.is_connected is True  # the bond survived
+
+
+async def test_the_opening_grace_applies_only_to_the_opening_command(monkeypatch):
+    # Once something has answered, the link has proven itself: a later silence
+    # is the notify-deaf failure, and that one *must* drop the link so the next
+    # poll rebuilds it. Keeping the long grace forever would strand it instead.
+    monkeypatch.setattr(client_module, "OPENING_TIMEOUT", 0.05)
+    monkeypatch.setattr(client_module, "COMMAND_TIMEOUT", 0.05)
+    fake = FakeDohm()
+
+    async def connector(_ble_device):
+        return fake
+
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
+    await client.connect()
+    assert await client.get_power() is True  # link opens normally
+
+    _mute_first(fake)
+    with pytest.raises(TimeoutError):
+        await client.get_speed()
+
+    assert client.is_connected is False  # dropped on the first miss, no retries
+    assert fake.is_connected is False
 
 
 async def test_command_keeps_a_late_reply_that_misses_wait_for(monkeypatch):
@@ -451,7 +455,7 @@ async def test_command_keeps_a_late_reply_that_misses_wait_for(monkeypatch):
     async def connector(_ble_device):
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
     await client.connect()
 
     async def miss(awaitable, _timeout):
@@ -472,16 +476,18 @@ async def test_unanswered_command_drops_the_link(monkeypatch):
     # backend that hides the CCCD, so the re-arm cannot wake it. A command that
     # goes unanswered must drop the link, so the next one rebuilds it.
     monkeypatch.setattr(client_module, "COMMAND_TIMEOUT", 0.05)
+    monkeypatch.setattr(client_module, "OPENING_TIMEOUT", 0.05)
     fake = FakeDohm(require_rearm=True, expose_cccd=False)
 
     async def connector(_ble_device):
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
-    await client.connect()  # identify() still gets its reply
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
+    await client.connect()
+    assert await client.get_power() is True  # opens the link on the armed reply
 
     with pytest.raises(TimeoutError):
-        await client.get_power()
+        await client.get_speed()  # device has re-deafened; re-arm cannot reach it
 
     assert client.is_connected is False  # coordinator will reconnect
     assert fake.is_connected is False  # link actually dropped
@@ -513,7 +519,7 @@ async def test_rebond_clears_the_stored_bond_then_pairs():
     async def connector(_ble_device):
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
     outcome = await client.rebond()
 
     assert fake.bond_calls == ["unpair", "pair"]
@@ -531,7 +537,7 @@ async def test_rebond_refreshes_theFakeBLEDevice():
         return FakeDohm()
 
     fresh = object()
-    client = DohmClient(ble_device=object(), connector=connector)
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
     await client.rebond(fresh)
 
     assert seen == [fresh]
@@ -547,7 +553,7 @@ async def test_rebond_drops_its_own_link():
     async def connector(_ble_device):
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
     await client.rebond()
 
     assert fake.is_connected is False
@@ -570,7 +576,7 @@ async def test_rebond_reports_a_failed_repair_without_raising():
     async def connector(_ble_device):
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
     outcome = await client.rebond()
 
     assert fake.bond_calls == ["unpair", "pair"]
@@ -592,7 +598,7 @@ async def test_rebond_unsupported_when_the_backend_has_no_unpair():
     async def connector(_ble_device):
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
     with pytest.raises(DohmRebondUnsupported):
         await client.rebond()
 
@@ -613,7 +619,7 @@ async def test_rebond_unsupported_when_unpair_is_not_implemented():
     async def connector(_ble_device):
         return fake
 
-    client = DohmClient(ble_device=object(), connector=connector)
+    client = DohmClient(ble_device=object(), connector=connector, device_id=DEVICE_ID)
     with pytest.raises(DohmRebondUnsupported):
         await client.rebond()
 
@@ -664,7 +670,9 @@ async def test_default_connector_refreshes_the_device_between_attempts(monkeypat
     def refresh():
         return "fresh-device"
 
-    client = DohmClient(ble_device=FakeBLEDevice(), ble_device_callback=refresh)
+    client = DohmClient(
+        ble_device=FakeBLEDevice(), ble_device_callback=refresh, device_id=DEVICE_ID
+    )
     await client._connector(client._ble_device)
 
     assert calls == [refresh]
@@ -685,7 +693,7 @@ async def test_default_connector_without_a_callback_still_connects(monkeypatch):
 
     monkeypatch.setattr(bleak_retry_connector, "establish_connection", fake_establish)
 
-    client = DohmClient(ble_device=FakeBLEDevice())
+    client = DohmClient(ble_device=FakeBLEDevice(), device_id=DEVICE_ID)
     await client._connector(client._ble_device)
 
     assert calls == [None]

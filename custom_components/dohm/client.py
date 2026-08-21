@@ -31,16 +31,17 @@ _LOGGER = logging.getLogger(__name__)
 # is reported within one cycle.
 COMMAND_TIMEOUT = 15.0
 
-# The first notification after start_notify is in a different league from the
-# rest. On a freshly paired CoreBluetooth link we measured 14.67s for i$ then
-# 0.00s for every command after that. COMMAND_TIMEOUT is 15s, so identify()
-# loses that race on a coin flip, connect() drops the link to avoid a leaked
-# notify acquire -- and the *next* connect is notify-deaf until the top button
-# is held again. The device only grants a bond in pairing mode, so that drop
-# is what makes the integration keep asking to be re-paired. Wait out the slow
-# first reply, and retry i$ on the *same* connection before tearing it down.
-FIRST_COMMAND_TIMEOUT = 30.0
-IDENTIFY_ATTEMPTS = 3
+# The *opening* command on a link is in a different league from the rest. On a
+# freshly paired CoreBluetooth link we measured 14.67s for the first reply then
+# 0.00s for every command after it. COMMAND_TIMEOUT is 15s, so the opening
+# command loses that race on a coin flip -- and dropping the link over it is
+# what used to cost us the bond, because the device grants a new one only in
+# pairing mode (top button, ~5s). This is a property of the link, not of any
+# one command: whichever command happens to go first pays it. So the opening
+# command gets a longer wait and repeated tries on the *same* connection, and
+# only a link that stays mute through all of them is torn down.
+OPENING_TIMEOUT = 30.0
+OPENING_ATTEMPTS = 3
 
 # Client Characteristic Configuration Descriptor (notify enable bit).
 CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb"
@@ -113,9 +114,9 @@ class DohmClient:
         self,
         ble_device,
         *,
+        device_id: str,
         connector: Callable[[object], Awaitable[object]] | None = None,
         ble_device_callback: Callable[[], object] | None = None,
-        device_id: str | None = None,
     ) -> None:
         self._ble_device = ble_device
         # Bound into the default connector rather than passed through the
@@ -125,16 +126,18 @@ class DohmClient:
         )
         self._client = None
         self._notifying = False
-        # Remembered across reconnects. identify() via i$ is the slow, flaky
-        # first notify -- live, a reconnect's i$ can stay silent for 90s while
-        # S,<id>,n$ still gets OK$ immediately. Once we know the id, a timeout
-        # on i$ must not drop a working link (that drop is what forces pairing).
+        # Derived from the address, not asked for over the wire: it is the lower
+        # three MAC bytes and the device cannot change it. Asking meant i$ as the
+        # opening command, which is the slowest and least reliable one there is.
         self._device_id = device_id
+        # Has anything on this link actually answered yet? Until it has, every
+        # command is the opening command and gets OPENING_TIMEOUT.
+        self._opened = False
         self._queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._lock = asyncio.Lock()
 
     @property
-    def device_id(self) -> str | None:
+    def device_id(self) -> str:
         return self._device_id
 
     @property
@@ -148,21 +151,16 @@ class DohmClient:
             self._ble_device = ble_device
         _LOGGER.debug("connecting to %s", getattr(self._ble_device, "address", "?"))
         self._client = await self._connector(self._ble_device)
-        # Once connected, any later failure (notably identify() timing out on
-        # this racy single-connection link) must not leak a connected, notifying
+        # Once connected, any later failure must not leak a connected, notifying
         # client: the held link keeps BlueZ's notify subscription acquired, so
         # the next start_notify is refused with NotPermitted: Notify acquired.
-        # Release it before propagating. disconnect() is best-effort cleanup.
+        # Release it before propagating. _drop() is best-effort cleanup.
         try:
+            self._opened = False
             await self._subscribe()
-            if self._device_id is None:
-                await self.identify()
             _LOGGER.debug("connected; device id %s", self._device_id)
         except BaseException:
-            try:
-                await self.disconnect()
-            except Exception:  # noqa: BLE001 - best-effort; keep the real cause
-                pass
+            await self._drop()
             raise
 
     async def _subscribe(self) -> None:
@@ -184,9 +182,17 @@ class DohmClient:
             await self._client.start_notify(CHARACTERISTIC_UUID, self._on_notify)
         self._notifying = True
 
+    async def _drop(self) -> None:
+        """Best-effort teardown. The caller already has the failure that matters."""
+        try:
+            await self.disconnect()
+        except Exception:  # noqa: BLE001 - best-effort; keep the real cause
+            pass
+
     async def disconnect(self) -> None:
         client = self._client
         self._client = None
+        self._opened = False
         if client is None:
             return
         _LOGGER.debug("disconnecting (notifying=%s)", self._notifying)
@@ -282,127 +288,109 @@ class DohmClient:
         except Exception as err:  # noqa: BLE001 - best-effort; may already be armed
             _LOGGER.debug("CCCD re-arm failed on handle 0x%04x: %s", cccd.handle, err)
 
-    async def _command(
-        self,
-        payload: bytes,
-        *,
-        timeout: float | None = None,
-        drop_on_failure: bool = True,
-    ):
-        if timeout is None:
-            timeout = COMMAND_TIMEOUT
+    async def _command(self, payload: bytes):
+        """Send a command and return its parsed reply."""
         async with self._lock:
-            await self._rearm_notify()
-            while not self._queue.empty():
-                self._queue.get_nowait()
-            started = time.monotonic()
-            try:
-                await self._client.write_gatt_char(
-                    CHARACTERISTIC_UUID, payload, response=True
-                )
-                acked = time.monotonic()
-                try:
-                    raw = await asyncio.wait_for(self._queue.get(), timeout)
-                except TimeoutError:
-                    # The first notify after subscribe often lands a few tens of
-                    # ms past the wait. Dropping the link for that is how a
-                    # working bond gets thrown away and the next connect needs
-                    # the top button. Take a late frame if one is already here.
-                    if self._queue.empty():
-                        raise
-                    raw = self._queue.get_nowait()
-                # The ack/reply split is the diagnostic that matters: a device
-                # that acks fast and then never answers has gone notify-deaf,
-                # while a slow ack means the link itself is struggling.
-                _LOGGER.debug(
-                    "%r -> %r (ack %.2fs, reply %.2fs)",
-                    payload,
-                    bytes(raw),
-                    acked - started,
-                    time.monotonic() - acked,
-                )
-            except Exception as err:
-                # The link is unusable but not necessarily *down*: a device that
-                # has gone notify-deaf still acks writes, and a half-open link
-                # still reports is_connected. Either way nothing here reconnects
-                # on its own, so without dropping it the coordinator retries the
-                # same dead client every poll, forever. Rebuild from scratch
-                # instead -- what the official app does when it resumes slowly.
-                # Cancellation is not evidence of a bad link, so it is excluded.
-                # Identify retries pass drop_on_failure=False so a slow first
-                # i$ can be sent again on the same connection rather than
-                # forcing a re-pair.
-                _LOGGER.debug(
-                    "%r failed after %.2fs (%s: %s)%s",
-                    payload,
-                    time.monotonic() - started,
-                    type(err).__name__,
-                    err,
-                    "; dropping the link so the next command reconnects"
-                    if drop_on_failure
-                    else "; keeping the link for a retry",
-                )
-                if drop_on_failure:
-                    try:
-                        await self.disconnect()
-                    except Exception:  # noqa: BLE001 - best-effort; keep the cause
-                        pass
-                raise
+            raw = await self._exchange(payload)
         message = protocol.parse(raw)
         if isinstance(message, protocol.Failure):
             raise DohmCommandError(f"device rejected {payload!r}: {message.code}")
         return message
 
-    def _require_id(self) -> str:
-        if self._device_id is None:
-            raise DohmError("device id unknown; call connect() first")
-        return self._device_id
+    async def _exchange(self, payload: bytes) -> bytes:
+        """One request/reply, with the opening command handled as its own case."""
+        if self._opened:
+            return await self._send(payload, COMMAND_TIMEOUT, drop_on_failure=True)
 
-    async def identify(self) -> str:
-        last_err: Exception | None = None
-        for attempt in range(IDENTIFY_ATTEMPTS):
+        last_err: TimeoutError | None = None
+        for attempt in range(1, OPENING_ATTEMPTS + 1):
             try:
-                self._device_id = (
-                    await self._command(
-                        protocol.query_id(),
-                        timeout=FIRST_COMMAND_TIMEOUT,
-                        drop_on_failure=False,
-                    )
-                ).value
-                return self._device_id
+                raw = await self._send(payload, OPENING_TIMEOUT, drop_on_failure=False)
             except TimeoutError as err:
+                # Silence on a fresh link is not evidence the link is bad; it is
+                # what a slow first notify looks like. Ask again on the same
+                # connection rather than dropping a bond we may never get back.
                 last_err = err
-                # A reply can land in the gap between wait_for giving up and
-                # the next attempt draining the queue. Keep it.
-                if not self._queue.empty():
-                    raw = self._queue.get_nowait()
-                    message = protocol.parse(raw)
-                    if isinstance(message, protocol.DeviceId):
-                        self._device_id = message.value
-                        return self._device_id
                 _LOGGER.debug(
-                    "identify attempt %d/%d timed out%s",
-                    attempt + 1,
-                    IDENTIFY_ATTEMPTS,
-                    "; retrying on the same link"
-                    if attempt + 1 < IDENTIFY_ATTEMPTS
-                    else "",
+                    "opening command %r unanswered (attempt %d/%d)",
+                    payload,
+                    attempt,
+                    OPENING_ATTEMPTS,
                 )
-        assert last_err is not None
+            except Exception:
+                # Not a timeout: the link itself is bad, so stop retrying on it.
+                # Cancellation is not caught here -- it says nothing about the
+                # link, and tearing one down over it would be wrong.
+                await self._drop()
+                raise
+            else:
+                self._opened = True
+                return raw
+
+        # Mute through every attempt: connected, ATT-acking, and notify-deaf.
+        # Nothing here reconnects on its own, so the link has to go or the
+        # coordinator retries this same dead client every poll, forever.
+        _LOGGER.debug("link never answered %r; dropping it", payload)
+        await self._drop()
         raise last_err
+
+    async def _send(
+        self, payload: bytes, timeout: float, *, drop_on_failure: bool
+    ) -> bytes:
+        await self._rearm_notify()
+        while not self._queue.empty():
+            self._queue.get_nowait()
+        started = time.monotonic()
+        try:
+            await self._client.write_gatt_char(
+                CHARACTERISTIC_UUID, payload, response=True
+            )
+            acked = time.monotonic()
+            try:
+                raw = await asyncio.wait_for(self._queue.get(), timeout)
+            except TimeoutError:
+                # wait_for can give up with the notify already queued. Taking
+                # that frame costs nothing; discarding it costs a reconnect.
+                if self._queue.empty():
+                    raise
+                raw = self._queue.get_nowait()
+            # The ack/reply split is the diagnostic that matters: a device that
+            # acks fast and then never answers has gone notify-deaf, while a
+            # slow ack means the link itself is struggling.
+            _LOGGER.debug(
+                "%r -> %r (ack %.2fs, reply %.2fs)",
+                payload,
+                bytes(raw),
+                acked - started,
+                time.monotonic() - acked,
+            )
+        except Exception as err:
+            # Cancellation is deliberately not in here: it is not evidence of a
+            # bad link, and dropping one over it would cost a reconnect.
+            _LOGGER.debug(
+                "%r failed after %.2fs (%s: %s)",
+                payload,
+                time.monotonic() - started,
+                type(err).__name__,
+                err,
+            )
+            if drop_on_failure:
+                await self._drop()
+            raise
+        return raw
 
     async def set_speed(self, speed: int) -> None:
         if not MIN_SPEED <= speed <= MAX_SPEED:
             raise ValueError(
                 f"speed must be {MIN_SPEED}..{MAX_SPEED}, got {speed}"
             )
-        await self._command(protocol.set_speed(self._require_id(), speed))
+        await self._command(protocol.set_speed(self._device_id, speed))
 
     async def get_speed(self) -> int:
-        return (await self._command(protocol.query_speed(self._require_id()))).speed
+        return (await self._command(protocol.query_speed(self._device_id))).speed
 
     async def set_power(self, on: bool) -> None:
-        await self._command(protocol.set_power(self._require_id(), on))
+        await self._command(protocol.set_power(self._device_id, on))
 
     async def get_power(self) -> bool:
-        return (await self._command(protocol.query_power(self._require_id()))).on
+        return (await self._command(protocol.query_power(self._device_id))).on

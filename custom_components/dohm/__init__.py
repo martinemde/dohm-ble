@@ -24,34 +24,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: DohmConfigEntry) -> bool
     from homeassistant.const import CONF_ADDRESS, Platform
     from homeassistant.exceptions import ConfigEntryNotReady
 
+    from . import protocol
     from .client import DohmClient
-    from .const import CONF_DEVICE_ID, DOMAIN
     from .coordinator import DohmCoordinator
-    from .health import DohmHealth
 
     address: str = entry.data[CONF_ADDRESS]
     ble_device = async_ble_device_from_address(hass, address, connectable=True)
     if ble_device is None:
         raise ConfigEntryNotReady(f"Could not find Dohm with address {address}")
 
-    # Survives the retry: Home Assistant discards the coordinator when setup
-    # fails, so counting failures on it means a stale bond found at startup
-    # never reaches the re-bond threshold.
-    health = hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, DohmHealth())
-
     client = DohmClient(
         ble_device,
+        # The id is the lower three bytes of the address, so there is nothing to
+        # look up, store, or keep in sync -- and no i$ on the connect path.
+        device_id=protocol.device_id_from_address(address),
         ble_device_callback=lambda: async_ble_device_from_address(
             hass, address, connectable=True
         ),
-        device_id=entry.data.get(CONF_DEVICE_ID),
     )
-    coordinator = DohmCoordinator(hass, entry, client, address, health)
+    coordinator = DohmCoordinator(hass, entry, client, address)
     await coordinator.async_config_entry_first_refresh()
-    if client.device_id and entry.data.get(CONF_DEVICE_ID) != client.device_id:
-        hass.config_entries.async_update_entry(
-            entry, data={**entry.data, CONF_DEVICE_ID: client.device_id}
-        )
 
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, [Platform.MEDIA_PLAYER])
@@ -62,14 +54,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: DohmConfigEntry) -> boo
     """Unload a config entry."""
     from homeassistant.const import Platform
 
-    from .const import DOMAIN
-
     unloaded = await hass.config_entries.async_unload_platforms(
         entry, [Platform.MEDIA_PLAYER]
     )
     if unloaded:
         await entry.runtime_data.client.disconnect()
-        # Only on a real unload -- a failed setup retries without unloading,
-        # which is exactly when the failure count needs to survive.
-        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     return unloaded

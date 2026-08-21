@@ -20,12 +20,10 @@ from homeassistant.components.bluetooth import (
 from homeassistant.components.bluetooth.match import BluetoothCallbackMatcher
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .client import DohmClient, DohmError
 from .const import DOMAIN
-from .health import DohmHealth
 
 _LOGGER = logging.getLogger(__name__)
 UPDATE_INTERVAL = timedelta(seconds=30)
@@ -55,7 +53,6 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
         config_entry: ConfigEntry,
         client: DohmClient,
         address: str,
-        health: DohmHealth,
     ) -> None:
         # config_entry is passed explicitly rather than left to the ContextVar
         # fallback, which Home Assistant removes in 2026.8.
@@ -68,9 +65,6 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
         )
         self.client = client
         self.address = address
-        # Owned by the config entry, not by this coordinator: a failure during
-        # setup has to count even though the retry builds a new coordinator.
-        self.health = health
 
     def _fresh_ble_device(self):
         """The freshest BLEDevice Home Assistant has, or None."""
@@ -120,67 +114,39 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
         await self.client.connect(ble_device)
 
     async def _async_update_data(self) -> DohmState:
-        # "Not in range" leaves _ensure_connected as UpdateFailed and is
-        # deliberately not counted: the device dorms after ~1h idle, which is
-        # normal and says nothing about the bond. Only failures against a device
-        # we could actually reach escalate.
+        """Poll the device. A failure here is just a failed poll.
+
+        There is deliberately no escalation. Counting failures and clearing the
+        bond automatically could not tell a slow link from a stale one, and got
+        it wrong in the direction that costs the most: unpairing a Dohm that was
+        merely being slow leaves it reachable only after a top-button press.
+        Home Assistant already retries on the next interval, forever, which is
+        the right response to a link that is simply not ready yet. Clearing a
+        genuinely stale bond is a deliberate action in the options flow.
+        """
         try:
             await self._ensure_connected()
-            state = DohmState(
+            return DohmState(
                 power=await self.client.get_power(),
                 speed=await self.client.get_speed(),
             )
         except DohmError as err:
-            await self._async_note_failure()
             raise UpdateFailed(str(err)) from err
         except (*BLEAK_EXCEPTIONS, TimeoutError) as err:
-            await self._async_note_failure()
             raise UpdateFailed(f"error talking to Dohm: {err}") from err
-        self._note_success()
-        return state
 
-    async def _async_note_failure(self) -> None:
-        """Count a failure and, past the threshold, try to re-bond once."""
-        if not self.health.note_failure():
-            return
-        # Once per outage. If clearing the bond didn't fix it, repeating it
-        # every cycle only churns the proxy's NVS and keeps the device
-        # connected to nothing; the repair issue below is then the actionable
-        # part.
-        try:
-            outcome = await self.client.rebond(self._fresh_ble_device())
-        except Exception as err:  # noqa: BLE001 - diagnostics; poll still fails
-            _LOGGER.warning(
-                "re-bonding %s after %d failed attempts did not complete (%s: %s)",
-                self.address,
-                self.health.failures,
-                type(err).__name__,
-                err,
-            )
-        else:
-            _LOGGER.warning(
-                "re-bonded %s after %d failed attempts: %s",
-                self.address,
-                self.health.failures,
-                outcome,
-            )
-        # Raised either way: re-bonding can only clear *our* stale key, and the
-        # device grants a new bond only in pairing mode. If the next poll
-        # succeeds this is deleted again, so a self-healed outage stays silent.
-        ir.async_create_issue(
-            self.hass,
-            DOMAIN,
-            f"stale_bond_{self.address}",
-            is_fixable=False,
-            severity=ir.IssueSeverity.ERROR,
-            translation_key="stale_bond",
-            translation_placeholders={"address": self.address},
-        )
+    async def async_rebond(self) -> str:
+        """Clear the stored bond and pair again; returns what happened.
 
-    def _note_success(self) -> None:
-        if not self.health.note_success():
-            return
-        ir.async_delete_issue(self.hass, DOMAIN, f"stale_bond_{self.address}")
+        Only ever reached because someone asked for it. The link is dropped
+        first: unpair/pair run on their own short-lived connection, and the
+        next poll rebuilds the normal one.
+        """
+        await self.client.disconnect()
+        outcome = await self.client.rebond(self._fresh_ble_device())
+        _LOGGER.warning("re-bonded %s on request: %s", self.address, outcome)
+        await self.async_request_refresh()
+        return outcome
 
     async def async_set_power(self, on: bool) -> None:
         await self._ensure_connected()

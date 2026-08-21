@@ -34,9 +34,16 @@ from the official app; see [`docs/protocol.md`](docs/protocol.md) and the
 ## Troubleshooting
 
 - **It connects but never responds.** The Dohm only replies over a paired
-  (encrypted) link, so this means the stored pairing no longer matches. Hold the
-  top button ~5 seconds; the integration clears the stale pairing and re-pairs on
-  its own within about a minute, and raises a repair notification if it can't.
+  (encrypted) link, so this usually means the stored pairing no longer matches.
+  Give it a few minutes first — a link that is merely slow to start looks
+  identical, and Home Assistant keeps retrying. If it stays that way, hold the
+  top button ~5 seconds and use **Configure → Clear the pairing and pair again**
+  on the integration entry.
+
+  > The integration will not do this on its own. Earlier versions cleared the
+  > pairing automatically after three failed polls, which could not tell a slow
+  > link from a stale one — and guessing wrong threw away a working pairing that
+  > only the top button could restore.
 - **Adding it does nothing / says it's already configured.** An existing config
   entry is blocking the add, and disabled entries are hidden by default. Turn on
   *show disabled entries* under **Settings → Devices & Services**, then delete

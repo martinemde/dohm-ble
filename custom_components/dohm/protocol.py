@@ -51,8 +51,24 @@ class Failure:
 
 # --- Encoding ----------------------------------------------------------------
 
+def device_id_from_address(address: str) -> str:
+    """The id a device will answer to, from its BLE address.
+
+    The id is the lower three bytes of the MAC in uppercase hex, no
+    separators: ``00:22:A3:01:36:C4`` -> ``0136C4`` (docs/debugging.md).
+    Deriving it beats asking, because asking means ``i$`` -- the opening
+    command on a fresh link, and the slowest, least reliable one there is.
+    """
+    return address.replace(":", "").replace("-", "")[-6:].upper()
+
+
 def query_id() -> bytes:
-    """Ask the device for its id. The only command that needs no id."""
+    """Ask the device for its id. The only command that needs no id.
+
+    Unused by the integration now that the id is derived; kept because it is
+    the command that revealed the id scheme, and the way to check that
+    derivation against a real device.
+    """
     return f"i{TERMINATOR}".encode()
 
 

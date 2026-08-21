@@ -18,10 +18,23 @@
       "already_configured": "This Dohm is already configured."
     }
   },
-  "issues": {
-    "stale_bond": {
-      "title": "Dohm needs re-pairing",
-      "description": "Home Assistant can reach the Dohm at {address}, but it connects without ever answering. The Dohm only replies over a paired (encrypted) link, so its pairing key no longer matches the one Home Assistant holds — usually because the top button was pressed since pairing, which grants a new key and replaces the old one.\n\nHold the top button on the Dohm for ~5 seconds to put it back into pairing mode. It should recover within a minute.\n\nIf it doesn't, delete this integration and add it again while holding the button. The Dohm stores only one pairing at a time, so if you've since paired the phone app, that has taken the slot — forget the Dohm there first."
+  "options": {
+    "step": {
+      "init": {
+        "title": "Yogasleep Dohm Connect",
+        "menu_options": {
+          "rebond": "Clear the pairing and pair again"
+        }
+      },
+      "rebond": {
+        "title": "Clear the pairing and pair again",
+        "description": "Use this only if the Dohm shows as unavailable and stays that way. The Dohm replies only over a paired (encrypted) link, so if Home Assistant is holding a pairing key the device no longer accepts, it will connect and then never answer.\n\nThis clears the key from Home Assistant's side and asks for a new one. The Dohm only grants a pairing while in pairing mode, so hold the top button for ~5 seconds first.\n\nIf the Dohm is simply slow or out of range, do nothing — Home Assistant keeps retrying on its own, and clearing a pairing that still works means another trip to the top button."
+      }
+    },
+    "abort": {
+      "rebond_done": "{outcome}",
+      "rebond_failed": "Re-pairing did not complete. Check the logs for the error, and make sure the Dohm is powered and in range.",
+      "rebond_unsupported": "This Dohm is reached through an adapter that cannot clear pairings. A local Bluetooth adapter or an ESPHome proxy with the pairing feature enabled can do it."
     }
   }
 }
