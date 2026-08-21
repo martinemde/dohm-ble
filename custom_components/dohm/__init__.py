@@ -25,7 +25,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: DohmConfigEntry) -> bool
     from homeassistant.exceptions import ConfigEntryNotReady
 
     from .client import DohmClient
-    from .const import DOMAIN
+    from .const import CONF_DEVICE_ID, DOMAIN
     from .coordinator import DohmCoordinator
     from .health import DohmHealth
 
@@ -44,9 +44,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: DohmConfigEntry) -> bool
         ble_device_callback=lambda: async_ble_device_from_address(
             hass, address, connectable=True
         ),
+        device_id=entry.data.get(CONF_DEVICE_ID),
     )
     coordinator = DohmCoordinator(hass, entry, client, address, health)
     await coordinator.async_config_entry_first_refresh()
+    if client.device_id and entry.data.get(CONF_DEVICE_ID) != client.device_id:
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_DEVICE_ID: client.device_id}
+        )
 
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, [Platform.MEDIA_PLAYER])
