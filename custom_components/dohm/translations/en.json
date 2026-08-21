@@ -9,8 +9,17 @@
           "address": "Device"
         }
       },
-      "confirm": {
-        "description": "Do you want to set up {name}?"
+      "name": {
+        "title": "Name this Dohm",
+        "description": "Setting up {name}.\n\nGive it a name you'd actually say out loud — it becomes the device name and the entity name, so it's what voice assistants listen for. If you have more than one, name them after where they are.",
+        "data": {
+          "name": "Name",
+          "area": "Area"
+        },
+        "data_description": {
+          "name": "For example: Bedroom Dohm",
+          "area": "Optional. You can move it later without this being reapplied."
+        }
       }
     },
     "abort": {

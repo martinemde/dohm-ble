@@ -18,12 +18,13 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlow,
 )
-from homeassistant.const import CONF_ADDRESS
+from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.core import callback
+from homeassistant.helpers.selector import AreaSelector, AreaSelectorConfig
 
 from . import protocol
 from .client import DohmClient, DohmError, DohmRebondUnsupported
-from .const import COMMAND_SERVICE_UUID, DOMAIN, LOCAL_NAME_PREFIX
+from .const import COMMAND_SERVICE_UUID, CONF_AREA, DOMAIN, LOCAL_NAME_PREFIX
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,7 +54,8 @@ class DohmConfigFlow(ConfigFlow, domain=DOMAIN):
         return DohmOptionsFlow()
 
     def __init__(self) -> None:
-        self._discovery: BluetoothServiceInfoBleak | None = None
+        self._address: str | None = None
+        self._suggested_name: str | None = None
         self._discovered: dict[str, str] = {}  # address -> name
 
     async def async_step_bluetooth(
@@ -62,23 +64,10 @@ class DohmConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle a device discovered via the Bluetooth integration."""
         await self.async_set_unique_id(discovery_info.address)
         self._abort_if_unique_id_configured()
-        self._discovery = discovery_info
-        self.context["title_placeholders"] = {"name": _display_name(discovery_info)}
-        return await self.async_step_confirm()
-
-    async def async_step_confirm(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Confirm a single discovered device."""
-        assert self._discovery is not None
-        name = _display_name(self._discovery)
-        if user_input is not None:
-            return self._create_entry(self._discovery.address, name)
-        self._set_confirm_only()
-        return self.async_show_form(
-            step_id="confirm",
-            description_placeholders={"name": name},
-        )
+        self._address = discovery_info.address
+        self._suggested_name = _display_name(discovery_info)
+        self.context["title_placeholders"] = {"name": self._suggested_name}
+        return await self.async_step_name()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -88,7 +77,9 @@ class DohmConfigFlow(ConfigFlow, domain=DOMAIN):
             address = user_input[CONF_ADDRESS]
             await self.async_set_unique_id(address, raise_on_progress=False)
             self._abort_if_unique_id_configured()
-            return self._create_entry(address, self._discovered[address])
+            self._address = address
+            self._suggested_name = self._discovered[address]
+            return await self.async_step_name()
 
         current = self._async_current_ids()
         for info in async_discovered_service_info(self.hass, connectable=True):
@@ -106,8 +97,41 @@ class DohmConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
         )
 
-    def _create_entry(self, address: str, name: str) -> ConfigFlowResult:
-        return self.async_create_entry(title=name, data={CONF_ADDRESS: address})
+    async def async_step_name(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Name the Dohm and say where it is. Submitting confirms the add.
+
+        Both add paths used to land on the advertised name, which is the model
+        plus a MAC. That is unusable the moment there is more than one in the
+        house -- and these are bedroom devices, so there usually is.
+        """
+        assert self._address is not None
+        assert self._suggested_name is not None
+        if user_input is not None:
+            return self._create_entry(
+                self._address,
+                user_input[CONF_NAME].strip() or self._suggested_name,
+                user_input.get(CONF_AREA),
+            )
+        return self.async_show_form(
+            step_id="name",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_NAME, default=self._suggested_name): str,
+                    vol.Optional(CONF_AREA): AreaSelector(AreaSelectorConfig()),
+                }
+            ),
+            description_placeholders={"name": self._suggested_name},
+        )
+
+    def _create_entry(
+        self, address: str, name: str, area: str | None
+    ) -> ConfigFlowResult:
+        data: dict[str, Any] = {CONF_ADDRESS: address}
+        if area:
+            data[CONF_AREA] = area
+        return self.async_create_entry(title=name, data=data)
 
 
 class DohmOptionsFlow(OptionsFlow):

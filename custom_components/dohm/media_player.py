@@ -19,10 +19,19 @@ from homeassistant.components.media_player import (
     MediaPlayerState,
 )
 from homeassistant.const import CONF_ADDRESS
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER, MAX_SPEED, MIN_SPEED, MODEL, MODEL_ID
+from .const import (
+    CONF_AREA,
+    DOMAIN,
+    MANUFACTURER,
+    MAX_SPEED,
+    MIN_SPEED,
+    MODEL,
+    MODEL_ID,
+)
 from .coordinator import DohmCoordinator
 from .volume import speed_to_volume, volume_to_speed
 
@@ -38,7 +47,22 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up the Dohm media player from a config entry."""
-    async_add_entities([DohmMediaPlayer(entry.runtime_data, entry)])
+    async_add_entities(
+        [DohmMediaPlayer(entry.runtime_data, entry, _area_name(hass, entry))]
+    )
+
+
+def _area_name(hass: HomeAssistant, entry: ConfigEntry) -> str | None:
+    """The area picked when the Dohm was added, by name.
+
+    DeviceInfo wants a name, the selector gives an id, and an area can be
+    renamed or deleted between the two. A stale id is not worth failing setup
+    over -- the device simply arrives unassigned, as it did before.
+    """
+    if not (area_id := entry.data.get(CONF_AREA)):
+        return None
+    area = ar.async_get(hass).async_get_area(area_id)
+    return area.name if area else None
 
 
 class DohmMediaPlayer(CoordinatorEntity[DohmCoordinator], MediaPlayerEntity):
@@ -54,7 +78,9 @@ class DohmMediaPlayer(CoordinatorEntity[DohmCoordinator], MediaPlayerEntity):
         | MediaPlayerEntityFeature.TURN_OFF
     )
 
-    def __init__(self, coordinator: DohmCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self, coordinator: DohmCoordinator, entry: ConfigEntry, area: str | None
+    ) -> None:
         super().__init__(coordinator)
         address = entry.data[CONF_ADDRESS]
         self._attr_unique_id = entry.unique_id
@@ -65,6 +91,9 @@ class DohmMediaPlayer(CoordinatorEntity[DohmCoordinator], MediaPlayerEntity):
             model=MODEL,
             model_id=MODEL_ID,
             name=entry.title,
+            # Honored only when the device registry first creates this device,
+            # so moving it in the UI later is not undone on the next restart.
+            suggested_area=area,
         )
 
     @property

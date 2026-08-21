@@ -34,3 +34,10 @@ MAX_SPEED = 10
 # Command grammar: COMMAND[,ID[,VALUE]]$  e.g. b"S,0136C4,3$" sets speed; the
 # device acknowledges accepted commands with b"OK$".
 TERMINATOR = "$"
+
+
+# Chosen when the device is added, and only ever a *suggestion*: the device
+# registry applies it when it first creates the device and never again, so
+# moving the Dohm to another area later in the UI is not overwritten on the
+# next restart.
+CONF_AREA = "area"

@@ -22,8 +22,11 @@ from the official app; see [`docs/protocol.md`](docs/protocol.md) and the
 3. The Dohm should be auto-discovered. If not, go to **Settings → Devices &
    Services → Add Integration → Marpac Dohm**.
 4. **Hold the top button on the Dohm for ~5 seconds** to make it discoverable,
-   then select it. After this one-time pairing, Home Assistant reconnects on its
-   own.
+   then select it.
+5. Give it a name and, optionally, an area. The name becomes both the device and
+   the entity name, so it is what voice assistants listen for — worth naming
+   after the room if you have more than one. After this one-time pairing, Home
+   Assistant reconnects on its own.
 
 > **One controller at a time.** The Dohm stores exactly one pairing, and the top
 > button *grants a new one*, replacing whatever was there. That button is only
