@@ -31,6 +31,17 @@ _LOGGER = logging.getLogger(__name__)
 # is reported within one cycle.
 COMMAND_TIMEOUT = 15.0
 
+# The first notification after start_notify is in a different league from the
+# rest. On a freshly paired CoreBluetooth link we measured 14.67s for i$ then
+# 0.00s for every command after that. COMMAND_TIMEOUT is 15s, so identify()
+# loses that race on a coin flip, connect() drops the link to avoid a leaked
+# notify acquire -- and the *next* connect is notify-deaf until the top button
+# is held again. The device only grants a bond in pairing mode, so that drop
+# is what makes the integration keep asking to be re-paired. Wait out the slow
+# first reply, and retry i$ on the *same* connection before tearing it down.
+FIRST_COMMAND_TIMEOUT = 30.0
+IDENTIFY_ATTEMPTS = 3
+
 # Client Characteristic Configuration Descriptor (notify enable bit).
 CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb"
 
@@ -104,6 +115,7 @@ class DohmClient:
         *,
         connector: Callable[[object], Awaitable[object]] | None = None,
         ble_device_callback: Callable[[], object] | None = None,
+        device_id: str | None = None,
     ) -> None:
         self._ble_device = ble_device
         # Bound into the default connector rather than passed through the
@@ -113,7 +125,11 @@ class DohmClient:
         )
         self._client = None
         self._notifying = False
-        self._device_id: str | None = None
+        # Remembered across reconnects. identify() via i$ is the slow, flaky
+        # first notify -- live, a reconnect's i$ can stay silent for 90s while
+        # S,<id>,n$ still gets OK$ immediately. Once we know the id, a timeout
+        # on i$ must not drop a working link (that drop is what forces pairing).
+        self._device_id = device_id
         self._queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._lock = asyncio.Lock()
 
@@ -139,7 +155,8 @@ class DohmClient:
         # Release it before propagating. disconnect() is best-effort cleanup.
         try:
             await self._subscribe()
-            await self.identify()
+            if self._device_id is None:
+                await self.identify()
             _LOGGER.debug("connected; device id %s", self._device_id)
         except BaseException:
             try:
@@ -265,7 +282,15 @@ class DohmClient:
         except Exception as err:  # noqa: BLE001 - best-effort; may already be armed
             _LOGGER.debug("CCCD re-arm failed on handle 0x%04x: %s", cccd.handle, err)
 
-    async def _command(self, payload: bytes):
+    async def _command(
+        self,
+        payload: bytes,
+        *,
+        timeout: float | None = None,
+        drop_on_failure: bool = True,
+    ):
+        if timeout is None:
+            timeout = COMMAND_TIMEOUT
         async with self._lock:
             await self._rearm_notify()
             while not self._queue.empty():
@@ -276,7 +301,16 @@ class DohmClient:
                     CHARACTERISTIC_UUID, payload, response=True
                 )
                 acked = time.monotonic()
-                raw = await asyncio.wait_for(self._queue.get(), COMMAND_TIMEOUT)
+                try:
+                    raw = await asyncio.wait_for(self._queue.get(), timeout)
+                except TimeoutError:
+                    # The first notify after subscribe often lands a few tens of
+                    # ms past the wait. Dropping the link for that is how a
+                    # working bond gets thrown away and the next connect needs
+                    # the top button. Take a late frame if one is already here.
+                    if self._queue.empty():
+                        raise
+                    raw = self._queue.get_nowait()
                 # The ack/reply split is the diagnostic that matters: a device
                 # that acks fast and then never answers has gone notify-deaf,
                 # while a slow ack means the link itself is struggling.
@@ -295,18 +329,24 @@ class DohmClient:
                 # same dead client every poll, forever. Rebuild from scratch
                 # instead -- what the official app does when it resumes slowly.
                 # Cancellation is not evidence of a bad link, so it is excluded.
+                # Identify retries pass drop_on_failure=False so a slow first
+                # i$ can be sent again on the same connection rather than
+                # forcing a re-pair.
                 _LOGGER.debug(
-                    "%r failed after %.2fs (%s: %s); dropping the link so the "
-                    "next command reconnects",
+                    "%r failed after %.2fs (%s: %s)%s",
                     payload,
                     time.monotonic() - started,
                     type(err).__name__,
                     err,
+                    "; dropping the link so the next command reconnects"
+                    if drop_on_failure
+                    else "; keeping the link for a retry",
                 )
-                try:
-                    await self.disconnect()
-                except Exception:  # noqa: BLE001 - best-effort; keep the cause
-                    pass
+                if drop_on_failure:
+                    try:
+                        await self.disconnect()
+                    except Exception:  # noqa: BLE001 - best-effort; keep the cause
+                        pass
                 raise
         message = protocol.parse(raw)
         if isinstance(message, protocol.Failure):
@@ -319,8 +359,37 @@ class DohmClient:
         return self._device_id
 
     async def identify(self) -> str:
-        self._device_id = (await self._command(protocol.query_id())).value
-        return self._device_id
+        last_err: Exception | None = None
+        for attempt in range(IDENTIFY_ATTEMPTS):
+            try:
+                self._device_id = (
+                    await self._command(
+                        protocol.query_id(),
+                        timeout=FIRST_COMMAND_TIMEOUT,
+                        drop_on_failure=False,
+                    )
+                ).value
+                return self._device_id
+            except TimeoutError as err:
+                last_err = err
+                # A reply can land in the gap between wait_for giving up and
+                # the next attempt draining the queue. Keep it.
+                if not self._queue.empty():
+                    raw = self._queue.get_nowait()
+                    message = protocol.parse(raw)
+                    if isinstance(message, protocol.DeviceId):
+                        self._device_id = message.value
+                        return self._device_id
+                _LOGGER.debug(
+                    "identify attempt %d/%d timed out%s",
+                    attempt + 1,
+                    IDENTIFY_ATTEMPTS,
+                    "; retrying on the same link"
+                    if attempt + 1 < IDENTIFY_ATTEMPTS
+                    else "",
+                )
+        assert last_err is not None
+        raise last_err
 
     async def set_speed(self, speed: int) -> None:
         if not MIN_SPEED <= speed <= MAX_SPEED:

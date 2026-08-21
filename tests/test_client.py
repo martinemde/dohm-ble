@@ -150,6 +150,36 @@ async def test_connect_learns_device_id(client):
     assert client.device_id == "0136C4"
 
 
+async def test_connect_skips_identify_when_device_id_is_already_known():
+    # Live: after a disconnect, i$ can stay silent for 90s while S,<id>,n$
+    # still gets OK$. Requiring identify() on every connect drops that link
+    # and forces pairing. A stored id must be enough to come up.
+    fake = FakeDohm()
+    original = fake.write_gatt_char
+
+    async def silent_identify(char, data, response=True):
+        payload = bytes(data)
+        if payload == b"i$":
+            fake.writes.append(payload)
+            return
+        await original(char, data, response=response)
+
+    fake.write_gatt_char = silent_identify
+
+    async def connector(_ble_device):
+        return fake
+
+    client = DohmClient(
+        ble_device=object(), connector=connector, device_id="0136C4"
+    )
+    await client.connect()
+
+    assert client.device_id == "0136C4"
+    assert client.is_connected is True
+    assert b"i$" not in fake.writes
+    assert await client.get_speed() == 2
+
+
 async def test_is_connected_reflects_transport(client, fake):
     assert client.is_connected is True
     await client.disconnect()
@@ -367,6 +397,71 @@ async def test_command_timeout_clears_two_notify_cadences():
     # timeout must clear two cadences with margin. 5.0 (one cadence) dropped
     # replies on a coin flip; see client.COMMAND_TIMEOUT's rationale.
     assert client_module.COMMAND_TIMEOUT >= 12.0
+
+
+async def test_first_command_waits_out_the_slow_opening_notify():
+    # Live: i$ after start_notify replied in 14.67s, then every later command
+    # in 0.00s. COMMAND_TIMEOUT is 15s, so identify lost that race, dropped the
+    # link, and the next connect was notify-deaf until the top button. The first
+    # command has to wait longer than that measured opening reply.
+    assert client_module.FIRST_COMMAND_TIMEOUT > client_module.COMMAND_TIMEOUT
+    assert client_module.FIRST_COMMAND_TIMEOUT >= 25.0
+    assert client_module.IDENTIFY_ATTEMPTS >= 2
+
+
+async def test_identify_retries_on_the_same_link_when_the_first_i_is_silent(
+    monkeypatch,
+):
+    # Dropping the link after a silent first i$ is what forces a re-pair. The
+    # second i$ on the same connection must be allowed to succeed.
+    monkeypatch.setattr(client_module, "FIRST_COMMAND_TIMEOUT", 0.05)
+    monkeypatch.setattr(client_module, "COMMAND_TIMEOUT", 0.05)
+    fake = FakeDohm()
+    original = fake.write_gatt_char
+    seen = {"i": 0}
+
+    async def skip_first_identify(char, data, response=True):
+        payload = bytes(data)
+        if payload == b"i$":
+            seen["i"] += 1
+            if seen["i"] == 1:
+                fake.writes.append(payload)
+                return
+        await original(char, data, response=response)
+
+    fake.write_gatt_char = skip_first_identify
+
+    async def connector(_ble_device):
+        return fake
+
+    client = DohmClient(ble_device=object(), connector=connector)
+    await client.connect()
+
+    assert seen["i"] == 2
+    assert client.device_id == "0136C4"
+    assert fake.is_connected is True
+    assert client.is_connected is True
+
+
+async def test_command_keeps_a_late_reply_that_misses_wait_for(monkeypatch):
+    # wait_for can fire with the notify already queued. Treat that frame as
+    # success rather than dropping the link and forcing a re-pair.
+    fake = FakeDohm()
+
+    async def connector(_ble_device):
+        return fake
+
+    client = DohmClient(ble_device=object(), connector=connector)
+    await client.connect()
+
+    async def miss(awaitable, _timeout):
+        if asyncio.iscoroutine(awaitable):
+            awaitable.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", miss)
+    assert await client.get_power() is True
+    assert client.is_connected is True
 
 
 async def test_unanswered_command_drops_the_link(monkeypatch):

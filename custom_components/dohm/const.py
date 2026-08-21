@@ -34,3 +34,8 @@ MAX_SPEED = 10
 # Command grammar: COMMAND[,ID[,VALUE]]$  e.g. b"S,0136C4,3$" sets speed; the
 # device acknowledges accepted commands with b"OK$".
 TERMINATOR = "$"
+
+# Persisted on the config entry after the first successful identify(). Reconnects
+# must not depend on i$ succeeding -- that query is what times out and drops a
+# still-working link.
+CONF_DEVICE_ID = "device_id"
