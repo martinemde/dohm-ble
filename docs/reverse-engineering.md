@@ -7,6 +7,13 @@ on a new unit, a new firmware, or a new Mac. Two independent halves: **capture**
 For static APK extraction without connecting to hardware, see
 [Android app protocol extraction](android-app.md). It confirms the schedule
 writers, weekday masks, and clock format missing from the original capture.
+For current HA diagnostics, use [troubleshooting](debugging.md) and
+[pairing/recovery](pairing.md), not the old experimental tools below.
+
+**Before a live capture or probe:** get permission for any setting change or
+new pairing. Stop competing clients and pause HA when another tool will own
+the connection. Starting the app, creating a new bond, or holding the button
+can replace a working HA pairing. Reconnect HA afterward and check its replies.
 
 ## Part A — Capture the app's traffic (PacketLogger on macOS)
 
@@ -64,7 +71,8 @@ Sniffing tells you the protocol; you still must prove a non-app client can drive
 the device. `tools/probe.py` does this. Three macOS/CoreBluetooth gotchas, each
 of which we hit:
 
-1. **Hold the top button ~5s** to make the device connectable before scanning.
+1. **For deliberate initial pairing/recovery only**, hold the top button for
+   about five seconds. Do not press it when checking a healthy existing bond.
 2. **Connect by a scanned device, not a hardcoded address.** Passing a UUID
    string straight to `BleakClient` is unreliable on CoreBluetooth — scan first
    (`BleakScanner.discover`) and connect to the discovered `BLEDevice`. Match by
@@ -73,26 +81,41 @@ of which we hit:
      different one), and
    - the `AA114B7E-…` value we were first given is the **service UUID**, not a
      peripheral address — connecting by it fails.
-3. **Don't trust a hardcoded characteristic UUID.** `start_notify(<uuid>)` threw
-   `BleakCharacteristicNotFoundError`. Instead, enumerate the GATT table after
-   connecting and auto-pick the single characteristic whose properties include
-   both a write flag and `notify`. The probe prints the full table for the
-   record.
+3. **Inspect services, not numeric handles.** An early guessed characteristic
+   UUID caused `BleakCharacteristicNotFoundError`. The captured and Android
+   command UUID is now known: `00005601-d102-11e1-9b23-00025b005aa5`. The old
+   probe enumerates GATT and auto-picks a write+notify characteristic; confirm
+   it selected that UUID. Numeric ATT handles can differ between captures.
 
 ```
 uv run tools/probe.py --scan     # list nearby devices, confirm name + RSSI
 uv run tools/probe.py            # scan, match MARPAC_DOHM*, connect, dump GATT
 ```
 
-## Button behavior (resolved)
+## Button use and recovery
 
-The top-button hold is **only for discovery** — it makes the device advertise so
-a new client can find it. Once known, reconnection works **without** the button.
-Confirmed by reconnecting from a fresh probe run with no button press.
+A healthy existing bond was observed to reconnect without another button press.
+That does not guarantee unattended reconnection forever. The button makes the
+device discoverable for setup and can also replace a working pairing. Use it
+only for deliberate initial pairing or recovery, not every scan/reconnect.
+See [current recovery instructions](pairing.md).
 
-Implication for Home Assistant: the config flow asks for one button press at
-setup (to discover/pair), after which HA reconnects unattended forever. No
-recovery problem.
+## Tool limitations
+
+- `tools/extract_writes.py` analyzes saved captures and does not connect to or
+  actuate the device. It requires `tshark`.
+- `tools/probe.py` is an interactive macOS-era experiment. It does not use the
+  current HA connection/recovery path or explicitly request pairing. It scans
+  by name, and an unmatched explicit address can fall back to another named
+  device. Confirm the printed address/UUID before sending any command.
+- `tools/explore.py` deliberately changes power and speed, uses a short
+  1.5-second reply timeout, and probes values including speed zero. Restoration
+  is not protected by `finally`; interruption or a failed query can leave
+  settings changed. Do not use it as a safe current smoke test.
+- The tools' name matching can miss advertisements with no local name. The
+  integration has UUID-primary discovery and a name fallback.
+
+Do not run live tools to validate a documentation/code change without permission.
 
 ## Discovery matcher (resolved)
 
@@ -106,8 +129,7 @@ advertise the command service UUID:
   service_uuids: ['00005600-d102-11e1-9b23-00025b005aa5']
 ```
 
-So a Home Assistant `local_name` matcher never fires on Linux/BlueZ (the name
-only arrives via active-scan resolution, which macos CoreBluetooth does but a
-passive scan does not). The integration matches on the **service UUID**
-`00005600-…` instead, both in `manifest.json` and the config flow's device
-filter.
+This observation is why the **service UUID** `00005600-…` is the primary
+matcher. The current `manifest.json` also has a `MARPAC_DOHM*` local-name
+matcher, and the config flow uses a name fallback. Name availability varies by
+scanner/backend; do not rely on it being present or absent everywhere.

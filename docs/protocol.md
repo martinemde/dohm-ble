@@ -8,7 +8,8 @@ App-derived details below are not a substitute for hardware verification.
 ## Transport
 
 - Command service `00005600-d102-11e1-9b23-00025b005aa5` containing a single
-  characteristic `00005601-d102-11e1-9b23-00025b005aa5` (handle `0x0019` live).
+  characteristic `00005601-d102-11e1-9b23-00025b005aa5`. Numeric ATT handles
+  vary by capture/unit; discover them rather than hardcoding an old handle.
   Writable **with response**, **notify**, **not readable** — state arrives only
   via notifications.
 - Also present: Device Information Service `180a` (model/serial/firmware — good
@@ -32,7 +33,8 @@ Four kinds of notification come back:
 
 `LETTER[,ID[,VALUE...]]$`
 
-- **lowercase letter** = query (no value) — e.g. `s,0136C4$` asks for speed.
+- **lowercase letter** = query — e.g. `s,0136C4$` asks for speed. A query can
+  include a selector, such as the slot in `p,0136C4,1$`.
 - **UPPERCASE letter + value** = set — e.g. `S,0136C4,3$` sets speed 3.
 - The device **reports/acknowledges** in uppercase short form **without the
   ID** — e.g. `S,02$`, `M,1$`, or `OK$`.
@@ -80,8 +82,8 @@ on the existing hardware observation, not independently confirmed by this APK.
 - `S,<id>,N$` sets speed; reply `OK$`. Value is the bare integer, 1–2 digits
   (`S,<id>,3$`, `S,<id>,10$`).
 - `s,<id>$` returns `S,0N$` (zero-padded two digits).
-- **Confirmed range: 1–10.** `S,<id>,11$` returns `Failed 03$`. So HA
-  `speed_count = 10`.
+- **Confirmed range: 1–10.** `S,<id>,11$` returns `Failed 03$`. HA maps these
+  10 hardware levels to its entity's volume/speed controls.
 
 ## State reads
 
@@ -90,7 +92,7 @@ the original iOS capture polls `m,<id>$` and `s,<id>$` roughly every 5 seconds;
 Android schedules both queries every second. HA currently polls every 30 seconds.
 State comes from the resulting `M,_$` / `S,0_$` notifications, not a GATT read.
 
-## Time (`T`) — out of v1 scope
+## Time (`T`) — protocol helper, not exposed by HA
 
 `T,<id>,HHMM,D$` where `HHMM` is 24h local time (capture showed `2133` = 21:33)
 and `D` is **Monday=1 through Sunday=7**, confirmed by Android's
@@ -99,7 +101,7 @@ The app resyncs on pairing/reconnect. Only relevant to onboard scheduling,
 which the HA integration does not use. A `t` constant exists in the APK but
 has no outbound caller or reply parser, so clock queries remain unconfirmed.
 
-## Schedule (`P`/`p`) — out of v1 scope (bonus capture)
+## Schedule (`P`/`p`) — protocol helpers, not exposed by HA
 
 Query `p,<id>,N$` returns a consolidated slot:
 

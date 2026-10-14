@@ -23,60 +23,53 @@ Download and install through HACS (Home Assistant Community Store):
 
 1. In HACS, add this repository as a **custom repository** (category:
    *Integration*).
-2. Install **Marpac Dohm** and restart Home Assistant.
-3. The Dohm should be auto-discovered. If not, go to **Settings → Devices &
-   Services → Add Integration → Marpac Dohm**.
-4. **Hold the top button on the Dohm for ~5 seconds** to make it discoverable,
-   then select it.
+2. Install this repository and restart Home Assistant.
+3. For initial pairing, close the phone app and **hold the Dohm's top button
+   for about five seconds**. This can replace an existing controller's bond.
+4. Select the discovered **Yogasleep Dohm Connect**. If it is not discovered,
+   use **Settings → Devices & Services → Add Integration → Yogasleep Dohm
+   Connect** while the device is in pairing mode.
 5. Give it a name and, optionally, an area. The name becomes both the device and
    the entity name, so it is what voice assistants listen for — worth naming
    after the room if you have more than one. After this one-time pairing, Home
    Assistant reconnects on its own.
 
-> **One controller at a time.** The Dohm stores exactly one pairing, and the top
-> button *grants a new one*, replacing whatever was there. That button is only
-> for pairing — it plays no part in normal operation, so pressing it while
-> troubleshooting will break a working setup. If the phone app has the pairing,
-> forget the Dohm there before adding it here.
+> **Protect a working pairing.** On the tested device, only one controller
+> connection/bond was usable at a time. A new pairing or a top-button hold can
+> replace the old bond. These are hardware observations, not guarantees for
+> every firmware. Normal reconnection should not require the button. Stop the
+> phone app before using HA; press the button only for deliberate setup/recovery.
 
 ## Troubleshooting
 
-- **It connects but never responds.** The Dohm only replies over a paired
-  (encrypted) link, so this usually means the stored pairing no longer matches.
-  Give it a few minutes first — a link that is merely slow to start looks
-  identical, and Home Assistant keeps retrying. If it stays that way, hold the
-  top button ~5 seconds and use **Configure → Clear the pairing and pair again**
-  on the integration entry. BlueZ recovery now reconnects after clearing the
-  bond before requesting a new one; ESPHome pairs on the existing link when
-  possible.
-- **It moved to a different Bluetooth proxy.** HA may select another proxy.
-  If that controller has a stale key, use the same deliberate recovery action.
-  If HA changes controllers during recovery, it reports partial completion;
-  retry on the newly selected controller. See [pairing and proxy recovery](docs/pairing.md).
+- **Connected, but no replies.** Allow a few minutes for the first exchange.
+  Then check reachability, competing clients, and authentication/notification
+  logs. Silence alone does not prove a stale key. If deliberate recovery is
+  needed, hold the top button for about five seconds and use **Configure →
+  Clear the pairing and pair again**.
+- **Moved to a different proxy.** HA can select another controller. Repair a
+  stale key with the same deliberate recovery action. If HA switches
+  controllers during recovery, it reports partial completion; retry on the
+  newly selected controller.
+- **Already configured.** Show disabled entries under **Settings → Devices &
+  Services**, then re-enable the intended entry. Delete it only if you really
+  want a fresh configuration; deleting an entry is not bond recovery.
+- **Still unavailable.** Start with [current troubleshooting](docs/debugging.md)
+  and the [pairing/recovery guide](docs/pairing.md).
 
-  > The integration will not do this on its own. Earlier versions cleared the
-  > pairing automatically after three failed polls, which could not tell a slow
-  > link from a stale one — and guessing wrong threw away a working pairing that
-  > only the top button could restore.
-- **Adding it does nothing / says it's already configured.** An existing config
-  entry is blocking the add, and disabled entries are hidden by default. Turn on
-  *show disabled entries* under **Settings → Devices & Services**, then delete
-  the old one before re-adding.
-- **It went unavailable and stayed there.** Check the logs for
-  `custom_components.dohm`; the version history and diagnostic recipes are in
-  [`docs/debugging.md`](docs/debugging.md).
+The integration never clears a bond automatically after failed polls.
 
 ## What you get
 
 - A **media player** entity (device class *speaker*): turn on/off and set volume
-  across the device's 10 levels. Volume up/down step exactly one level rather
-  than the usual 10%, so every press is a setting the device actually has, and
+  across the device's 10 levels. Volume up/down changes exactly one hardware
+  level (10 percentage points), so every press is a real device setting, and
   the control snaps immediately to the level the Dohm took — drop the slider at
   43% and it moves to 50% right away rather than after a round-trip.
 - Voice control via the standard volume intents — *"set the white noise to 40
   percent"*, *"turn the white noise down"* — which a fan entity can't answer.
-- A proper **device** entry (manufacturer Marpac, model Dohm), with firmware/
-  serial pulled from the device when available.
+- A **device** entry with manufacturer Marpac and model Dohm. Firmware/serial
+  reads and a battery sensor are not implemented.
 
 The Dohm has no silent setting, so volume 0 is the quietest level rather than
 off; use turn off for silence. It plays no media, so no transport controls,
@@ -106,8 +99,11 @@ The reverse-engineering engine (`protocol.py`, `client.py`) is vendored inside
 uv run pytest
 ```
 
-`tools/` holds the BLE exploration helpers used to map the protocol
-(`probe.py`, `explore.py`, `extract_writes.py`).
+See [contributor instructions](CLAUDE.md) for validation and releases.
+`extract_writes.py` decodes captures. `probe.py` and `explore.py` are historical
+experiments, not supported pairing diagnostics; `explore.py` changes device
+settings. Read the [tool limitations](docs/reverse-engineering.md#tool-limitations)
+before using them.
 
 ## License
 

@@ -184,13 +184,14 @@ or establish a clock-query reply format. No extra guessed commands were added.
 
 ## Home Assistant next steps
 
-Pure name/time/schedule encoders and a schedule report decoder can now be
-implemented from evidence. They do not by themselves expose new HA entities.
+Pure name/time/schedule encoders and a schedule report decoder are implemented
+and unit-tested from this evidence. They do not expose new HA entities or
+client operations by themselves.
 Before adding client operations, match reply types (`Ack`, `NameReport`,
 `ScheduleReport`) and serialize multi-write schedule updates. Then check on
 hardware: read all three slots, save originals, sync clock, alter one unused
 slot with permission, read back, and restore it. Device Information reads can
-also correct the README's currently unfulfilled firmware/serial promise.
+add firmware/serial metadata, which is not currently implemented.
 
 See the [pairing audit](pairing.md) for the missing explicit pairing request
 found in the existing client and the local connection fix. The HA entity
