@@ -6,8 +6,12 @@ from the official app; see [`docs/protocol.md`](docs/protocol.md), the
 [`docs/reverse-engineering.md`](docs/reverse-engineering.md) runbook, and the
 [Android APK findings](docs/android-app.md).
 
+> **0.4.1:** media-player volume 0 now turns the machine off. Turn on resumes
+> its previous level, or starts at 10% if no previous level is known. Upgrade
+> through HACS and restart Home Assistant; no re-pairing or re-addition is needed.
+>
 > **Existing installs:** entries without an entity-type choice keep their
-> current media-player behavior. To choose a fan, delete and re-add the
+> current media-player entity type. To choose a fan, delete and re-add the
 > integration as described below. Upgrading from the old 0.1.x fan releases can
 > leave an unavailable `fan.*` entry; remove it from **Settings → Devices &
 > Services → Entities** if you no longer use it. Update automations and cards
