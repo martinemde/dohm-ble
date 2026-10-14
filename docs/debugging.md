@@ -4,6 +4,16 @@ Working notes for diagnosing connection/notify problems against the real
 device, written for a fresh session to resume without re-discovering everything.
 Pairs with [protocol.md](protocol.md) and [reverse-engineering.md](reverse-engineering.md).
 
+For the current connection path, start with the [pairing audit](pairing.md).
+The Android APK review found that normal connections did not explicitly request
+pairing. The local fix requests it, without automatically clearing stored bonds.
+BlueZ recovery now reconnects the unpaired client before explicitly pairing,
+with a controller-identity guard for HA route changes. A new proxy can be
+repaired deliberately; ordinary handoff failures never clear bonds.
+Historical notes below describe earlier releases; automatic rebonding described
+for v0.1.8 is no longer active. Android enables its CCCD once during setup,
+whereas the per-command CCCD observation below comes from the iOS capture.
+
 ---
 
 ## Notify-acquired leak — root cause found, fixed in v0.1.5

@@ -1,7 +1,9 @@
 # Marpac Dohm BLE protocol
 
 Reverse-engineered from a PacketLogger capture of the official Dohm macOS app
-(`captures/capture-2133.pklg`, 2026-06-02).
+(`captures/capture-2133.pklg`, 2026-06-02), then checked against the Android
+Marpac Connect 1.0.7.0 APK. See [Android extraction and source references](android-app.md).
+App-derived details below are not a substitute for hardware verification.
 
 ## Transport
 
@@ -45,8 +47,11 @@ to know it ahead of time — ask for it:
 <- I,0136C4$        # this unit's ID is 0136C4
 ```
 
-This is the whole "unlock" the official app does that bare LightBlue writes
-were missing: there is no secret key — commands just require the ID prefix.
+The device ID is a required command prefix, not a secret key. BLE pairing/
+encryption is also required on the observed hardware; the ID is not a substitute
+for a bond. Android queries `i$` during new-device setup and stores the reply.
+The current HA client instead derives it from the final three MAC bytes, based
+on the existing hardware observation, not independently confirmed by this APK.
 
 ## Command table
 
@@ -61,7 +66,9 @@ were missing: there is no secret key — commands just require the ID prefix.
 | Set name | `N,0136C4,Marpac$` | `OK$` |
 | Set time | `T,0136C4,2133,2$` | `OK$` |
 | Query schedule slot N | `p,0136C4,1$` | `P,1,2030,0730,7F,02$` |
-| Set schedule (partial) | `P,0136C4,1,1,2030$` | `OK$` |
+| Set schedule start | `P,0136C4,1,1,2030$` | `OK$` in capture |
+| Set schedule stop | `P,0136C4,2,1,0730$` | `OK$` in capture |
+| Set schedule days/volume | `P,0136C4,3,1,7F,02$` | `OK$` in capture |
 
 ## Power (`M`/`m`) — IN SCOPE
 
@@ -79,15 +86,18 @@ were missing: there is no secret key — commands just require the ID prefix.
 ## State reads
 
 The characteristic is not GATT-readable, so state is obtained by *querying*:
-the app polls `m,<id>$` and `s,<id>$` roughly every 5 seconds and reads the
-resulting `M,_$` / `S,0_$` notifications. Our client/coordinator should do the
-same to track entity state and detect physical changes.
+the original iOS capture polls `m,<id>$` and `s,<id>$` roughly every 5 seconds;
+Android schedules both queries every second. HA currently polls every 30 seconds.
+State comes from the resulting `M,_$` / `S,0_$` notifications, not a GATT read.
 
 ## Time (`T`) — out of v1 scope
 
 `T,<id>,HHMM,D$` where `HHMM` is 24h local time (capture showed `2133` = 21:33)
-and `D` is a weekday index (`2`). The onboard clock drifts, which is why the app
-resyncs. Only relevant to the onboard schedule, which v1 does not use.
+and `D` is **Monday=1 through Sunday=7**, confirmed by Android's
+`LocalDate.getDayOfWeek().getValue()`. No date/timezone/seconds are sent.
+The app resyncs on pairing/reconnect. Only relevant to onboard scheduling,
+which the HA integration does not use. A `t` constant exists in the APK but
+has no outbound caller or reply parser, so clock queries remain unconfirmed.
 
 ## Schedule (`P`/`p`) — out of v1 scope (bonus capture)
 
@@ -98,16 +108,33 @@ P,<slot>,<startHHMM>,<stopHHMM>,<daysBitmask>,<speed>$
 e.g. P,1,2030,0730,7F,02$  ->  slot 1, 20:30–07:30, days 0x7F (all 7), speed 2
 ```
 
-`daysBitmask` `0x7F` = all seven days (one bit per weekday). Setting a slot
-appears to be split across multiple writes (`P,<id>,1,1,2030$`,
-`P,<id>,2,1,0730$`, `P,<id>,3,1,7F,02$`) — exact field layout NOT yet confirmed;
-needs a focused capture if onboard-schedule support is ever pursued.
+Android confirms three slots (1–3) and three writes per update, in order:
+
+```
+P,<id>,1,<slot>,<startHHMM>$
+P,<id>,2,<slot>,<stopHHMM>$
+P,<id>,3,<slot>,<daysHex>,<speed02d>$
+```
+
+The field selector comes before the slot. Day bits are Monday=`01`,
+Tuesday=`02`, Wednesday=`04`, Thursday=`08`, Friday=`10`, Saturday=`20`,
+Sunday=`40`; weekdays=`1F`, all days=`7F`. Both day mask and speed are
+zero-padded to two characters, mask in uppercase hex and speed in decimal.
+
+In the app model, days=`00` disables a slot and speed=`00` deletes it.
+Active speeds are 1–10. The default is 22:00–06:00, weekdays, speed 5.
+Deletion still sends all three writes. These disable/delete semantics need
+hardware verification. Overnight scheduling is supported by the app UI, but
+firmware overlap, equal-time, and overnight-day behavior remain untested.
+See [Android findings](android-app.md) for app quirks and validation steps.
 
 ## Notes for the library
 
-- On connect: enable notifications, send `i$`, capture the returned ID, then use
-  it for all subsequent commands. Works on any unit without hardcoding.
-- `i$` is almost certainly the only prerequisite to control; the app's `n`/`N`/
-  `T` traffic looks like housekeeping. **To verify:** connect fresh, send only
-  `i$` then `S,<id>,3$`, and confirm the speed changes without the name/time
-  dance. (Validate with `tools/probe.py`.)
+- For an unknown device: pair, enable notifications, query `i$`, then use the
+  returned ID. The HA client currently uses MAC-derived IDs instead.
+- Name and clock commands are housekeeping, not a recovered secret handshake.
+  Hardware behavior still depends on bonding and notification setup.
+- Android uses zero-padded ordinary speed writes (`S,<id>,03$`); the existing
+  integration's bare decimal (`S,<id>,3$`) is already captured as working.
+- The pure protocol module includes name, clock, and schedule helpers. The
+  client and HA media player still expose only power and volume.

@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from functools import partial
 
+from bleak import BleakBackend
 from bleak.exc import BleakError
 
 from . import protocol
@@ -43,6 +45,12 @@ COMMAND_TIMEOUT = 15.0
 OPENING_TIMEOUT = 30.0
 OPENING_ATTEMPTS = 3
 
+# Bound reconnect after a deliberate unpair; the machine may have left pairing
+# mode. This is separate from the long wait for an opening notification.
+REBOND_RECONNECT_TIMEOUT = 30.0
+REBOND_PAIR_TIMEOUT = 30.0
+RECOVERY_CLEANUP_TIMEOUT = 5.0
+
 # Client Characteristic Configuration Descriptor (notify enable bit).
 CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb"
 
@@ -58,6 +66,30 @@ def _is_notify_acquired(err: BleakError) -> bool:
     return "Notify acquired" in text or "NotPermitted" in text
 
 
+def _connection_controller(client) -> tuple[str, str] | None:
+    """Identify the actual controller, not the requested BLEDevice.
+
+    HA chooses its transport at connect time, ignoring the supplied device's
+    source. No public source-pin API is available in the audited stack. These
+    narrow introspection points are used only as a safety guard: if they stop
+    exposing identity, disconnected recovery fails closed rather than pairing
+    a different controller. They do not override HA routing.
+    """
+    scanner = getattr(client, "_connected_scanner", None)
+    source = getattr(scanner, "source", None)
+    if isinstance(source, str) and source:
+        return ("ha", source)
+    backend = getattr(client, "_backend", None)
+    path = getattr(backend, "_device_path", None)
+    if isinstance(path, str):
+        match = re.fullmatch(
+            r"(/org/bluez/hci[0-9]+)/dev_(?:[0-9A-Fa-f]{2}_){5}[0-9A-Fa-f]{2}", path
+        )
+        if match:
+            return ("bluez", match[1])
+    return None
+
+
 class DohmError(Exception):
     """Base error for Dohm operations."""
 
@@ -69,43 +101,70 @@ class DohmCommandError(DohmError):
 class DohmRebondUnsupported(DohmError):
     """The Bluetooth backend can't clear a stored bond.
 
-    Raised for host BlueZ/CoreBluetooth (no proxy-style unpair) and for ESPHome
+    Raised for CoreBluetooth (macOS has no unpair API) and for ESPHome
     firmware older than 2024.3.0, which doesn't advertise the ``PAIRING``
-    feature flag.
+    feature flag. BlueZ supports unpairing, but it also disconnects the device.
     """
 
 
-async def _default_connector(ble_device, *, ble_device_callback=None):
-    """Connect, retrying against a *fresh* BLEDevice each attempt.
+async def _default_connector(
+    ble_device, *, ble_device_callback=None, pair: bool = True
+):
+    """Connect and request pairing, retrying against a fresh BLEDevice.
+
+    Pairing is awaited by backends that support ``pair=True`` before commands
+    run. Recovery uses ``pair=False`` so stale keys can be cleared first.
+    CoreBluetooth initiates pairing implicitly on authenticated GATT access.
 
     Connecting is racy on this device -- the first attempt often comes back
     ``le-connection-abort-by-local`` -- so ``establish_connection`` retrying is
-    essential. But retrying is only half of it: without ``ble_device_callback``
-    every attempt reuses the same BLEDevice snapshot, which may be minutes stale
-    by the time we get here. The callback re-reads Home Assistant's freshest
-    advertisement between attempts, which is what the phone app does when it
-    scans before connecting.
+    essential. The synchronous ``ble_device_callback`` is forwarded for API
+    compatibility, not treated as a rediscovery guarantee: the audited retry
+    connector accepts it without using it. HA's client wrapper itself chooses
+    from its current scanners on each connect attempt.
     """
     from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
-    client = await establish_connection(
-        BleakClientWithServiceCache,
-        ble_device,
-        ble_device.address,
-        ble_device_callback=ble_device_callback,
-    )
+    async def establish():
+        try:
+            client = await establish_connection(
+                BleakClientWithServiceCache,
+                ble_device,
+                ble_device.address,
+                ble_device_callback=ble_device_callback,
+                pair=pair,
+            )
+            # BlueZ connect(pair=True) skips Pair if already connected. Explicit
+            # pair() checks the bond even in that case, and preserves valid keys.
+            if pair and getattr(client, "backend_id", None) == BleakBackend.BLUEZ_DBUS:
+                try:
+                    async with asyncio.timeout(REBOND_PAIR_TIMEOUT):
+                        await client.pair()
+                except BaseException:
+                    try:
+                        async with asyncio.timeout(RECOVERY_CLEANUP_TIMEOUT):
+                            await client.disconnect()
+                    except Exception as err:  # noqa: BLE001 - preserve pair failure
+                        _LOGGER.debug("cleanup after pairing failure: %s", err)
+                    raise
+            return client
+        except NotImplementedError as err:
+            if not pair:
+                raise
+            raise DohmError(
+                "Bluetooth backend cannot request pairing; update ESPHome proxy "
+                "firmware to 2024.3.0 or newer (PAIRING support) or use a "
+                "supported adapter"
+            ) from err
+
+    client = await establish()
     # A connection cut short (e.g. the device's brief connectable window) can
     # leave a partial service cache that hides the command characteristic. If
     # it's missing, clear the cache and rediscover once.
     if client.services.get_characteristic(CHARACTERISTIC_UUID) is None:
         await client.clear_cache()
         await client.disconnect()
-        client = await establish_connection(
-            BleakClientWithServiceCache,
-            ble_device,
-            ble_device.address,
-            ble_device_callback=ble_device_callback,
-        )
+        client = await establish()
     return client
 
 
@@ -122,7 +181,12 @@ class DohmClient:
         # Bound into the default connector rather than passed through the
         # connector signature, so an injected test connector stays one-argument.
         self._connector = connector or partial(
-            _default_connector, ble_device_callback=ble_device_callback
+            _default_connector, ble_device_callback=ble_device_callback, pair=True
+        )
+        # Clearing a stale key must not depend on authenticating with that key.
+        # Injected connectors retain the same one-argument interface in both paths.
+        self._rebond_connector = connector or partial(
+            _default_connector, ble_device_callback=ble_device_callback, pair=False
         )
         self._client = None
         self._notifying = False
@@ -135,6 +199,7 @@ class DohmClient:
         self._opened = False
         self._queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._lock = asyncio.Lock()
+        self._recovering = False
 
     @property
     def device_id(self) -> str:
@@ -145,6 +210,16 @@ class DohmClient:
         return self._client is not None and self._client.is_connected
 
     async def connect(self, ble_device=None) -> None:
+        if self._recovering:
+            raise DohmError("pairing recovery is in progress")
+        async with self._lock:
+            if self._recovering:
+                raise DohmError("pairing recovery is in progress")
+            if self.is_connected:
+                return
+            await self._connect(ble_device)
+
+    async def _connect(self, ble_device=None) -> None:
         # In Home Assistant the BLEDevice can change between connections, so
         # allow refreshing it on (re)connect.
         if ble_device is not None:
@@ -175,8 +250,8 @@ class DohmClient:
             # connection and frees it; reconnect once and subscribe again.
             try:
                 await self._client.stop_notify(CHARACTERISTIC_UUID)
-            except Exception:  # noqa: BLE001 - best-effort; link may be gone
-                pass
+            except Exception as err:  # noqa: BLE001 - best-effort; link may be gone
+                _LOGGER.debug("stop notify before recovery failed: %s", err)
             await self._client.disconnect()
             self._client = await self._connector(self._ble_device)
             await self._client.start_notify(CHARACTERISTIC_UUID, self._on_notify)
@@ -186,8 +261,8 @@ class DohmClient:
         """Best-effort teardown. The caller already has the failure that matters."""
         try:
             await self.disconnect()
-        except Exception:  # noqa: BLE001 - best-effort; keep the real cause
-            pass
+        except Exception as err:  # noqa: BLE001 - best-effort; keep the real cause
+            _LOGGER.debug("transport cleanup failed: %s", err)
 
     async def disconnect(self) -> None:
         client = self._client
@@ -201,39 +276,44 @@ class DohmClient:
         # start_notify fails with org.bluez.Error.NotPermitted: Notify acquired,
         # piling up HCI resources until ENOMEM. The link may already be gone, so
         # failing to stop notify must not prevent the disconnect.
-        if self._notifying:
-            try:
-                await client.stop_notify(CHARACTERISTIC_UUID)
-            except Exception:  # noqa: BLE001 - best-effort cleanup
-                pass
-            self._notifying = False
-        await client.disconnect()
+        try:
+            if self._notifying:
+                try:
+                    async with asyncio.timeout(RECOVERY_CLEANUP_TIMEOUT):
+                        await client.stop_notify(CHARACTERISTIC_UUID)
+                except Exception as err:  # noqa: BLE001 - best-effort cleanup
+                    _LOGGER.debug("stop notify during disconnect failed: %s", err)
+                finally:
+                    self._notifying = False
+        finally:
+            # Cancellation during stop_notify must still release the single
+            # connection slot. Bound this separately from notification cleanup.
+            async with asyncio.timeout(RECOVERY_CLEANUP_TIMEOUT):
+                await client.disconnect()
 
     async def rebond(self, ble_device=None) -> str:
-        """Clear the stored bond and pair again; returns what actually happened.
+        """Deliberately clear one controller's bond and request a new one.
 
-        The escalation for a link that connects and ATT-acks writes but never
-        answers. The Dohm only emits notifications over an encrypted link, so
-        that signature means the controller is holding a bond key the device no
-        longer honors -- typically because the device's top button (which grants
-        a *new* bond, and it keeps only one) was pressed since we bonded.
-
-        Reconnecting can't fix it: ESPHome's firmware only *logs* an
-        authentication failure (``ble_client_base.cpp``, ``ESP_GAP_BLE_AUTH_CMPL_EVT``)
-        and never calls ``esp_ble_remove_bond_device``, so the stale key is
-        retried forever. Clearing it from this side is the only way back short of
-        erasing the proxy's flash -- and reflashing does *not* do it, since NVS
-        survives an OTA.
-
-        Runs on its own short-lived connection: unpair/pair are only valid while
-        connected, and whatever escalated to here already dropped the link. The
-        link is dropped again afterwards so the next poll rebuilds it normally.
+        Silence alone is not proof of a stale key. Only a user's recovery action
+        calls this. ESPHome can pair on the still-connected link; BlueZ removes
+        its device object during unpair and must connect/discover again first.
+        A reconnect may route elsewhere in HA, so verify the actual controller
+        before pairing. Never clear a second controller automatically.
         """
-        # As with connect(): Home Assistant's BLEDevice can change between
-        # connections, and the one we hold may be several failed polls stale.
-        if ble_device is not None:
-            self._ble_device = ble_device
-        client = await self._connector(self._ble_device)
+        if self._recovering:
+            raise DohmError("pairing recovery is already in progress")
+        self._recovering = True
+        try:
+            async with self._lock:
+                await self.disconnect()
+                if ble_device is not None:
+                    self._ble_device = ble_device
+                return await self._rebond()
+        finally:
+            self._recovering = False
+
+    async def _rebond(self) -> str:
+        client = await self._rebond_connector(self._ble_device)
         try:
             unpair = getattr(client, "unpair", None)
             pair = getattr(client, "pair", None)
@@ -241,19 +321,43 @@ class DohmClient:
                 raise DohmRebondUnsupported(
                     f"{type(client).__name__} exposes no unpair/pair"
                 )
+            controller = _connection_controller(client)
+            _LOGGER.debug("pairing recovery selected controller %s", controller)
             try:
                 await unpair()
             except NotImplementedError as err:
                 raise DohmRebondUnsupported(str(err) or type(client).__name__) from err
-            # Whether the device grants a fresh bond without being in pairing
-            # mode (top button held ~5s) is the open question this return value
-            # exists to answer, so the outcome is reported rather than raised:
-            # dropping the stale key is the half that always helps, and removing
-            # a bond can itself drop the link, which would fail pair() here even
-            # when the device would have accepted it on a fresh connection.
             try:
-                await pair()
-            except Exception as err:  # noqa: BLE001 - reported, not fatal
+                if not client.is_connected:
+                    if controller is None:
+                        raise DohmError(
+                            "cannot verify the original Bluetooth controller; "
+                            "retry normal setup after rediscovery"
+                        )
+                    # Reuse the public client, whose native BlueZ backend reset
+                    # its device path in unpair(). connect() performs discovery
+                    # again. Its recovery constructor still has pair=False.
+                    from bleak_retry_connector import retry_bluetooth_connection_error
+
+                    reconnect = retry_bluetooth_connection_error(attempts=3)(
+                        client.connect
+                    )
+                    async with asyncio.timeout(REBOND_RECONNECT_TIMEOUT):
+                        await reconnect()
+                    if not client.is_connected:
+                        raise DohmError("Bluetooth reconnect did not establish a link")
+                    reconnected_controller = _connection_controller(client)
+                    if reconnected_controller != controller:
+                        raise DohmError(
+                            f"Bluetooth controller changed during recovery "
+                            f"({controller!r} -> {reconnected_controller!r}); "
+                            "no pairing requested on the replacement controller"
+                        )
+                # Like Android's saved-device path: connect, then request a bond.
+                # Use a bound for proxies that never return a pairing response.
+                async with asyncio.timeout(REBOND_PAIR_TIMEOUT):
+                    await pair()
+            except Exception as err:  # noqa: BLE001 - report partial recovery
                 return (
                     f"cleared the stored bond; re-pair failed "
                     f"({type(err).__name__}: {err}) -- hold the top button ~5s"
@@ -261,9 +365,10 @@ class DohmClient:
             return "cleared the stored bond and paired again"
         finally:
             try:
-                await client.disconnect()
-            except Exception:  # noqa: BLE001 - best-effort; keep the real result
-                pass
+                async with asyncio.timeout(RECOVERY_CLEANUP_TIMEOUT):
+                    await client.disconnect()
+            except Exception as err:  # noqa: BLE001 - preserve recovery outcome
+                _LOGGER.debug("cleanup after pairing recovery: %s", err)
 
     def _on_notify(self, _sender, data: bytearray) -> None:
         self._queue.put_nowait(bytes(data))
@@ -272,8 +377,9 @@ class DohmClient:
         # The Dohm goes notify-deaf on a long-lived link until its CCCD is
         # re-enabled: the device stops emitting notifications even though writes
         # are still ATT-acked, so command replies silently go missing. The
-        # official app rewrites 01 00 to the CCCD before every command; mirror
-        # that. Best-effort -- some backends (e.g. CoreBluetooth) hide the CCCD,
+        # iOS capture rewrites 01 00 to the CCCD before commands; retain that
+        # workaround. Android 1.0.7.0 writes it only during connection setup.
+        # Best-effort -- some backends (e.g. CoreBluetooth) hide the CCCD,
         # where the start_notify subscription is the only handle we have.
         char = self._client.services.get_characteristic(CHARACTERISTIC_UUID)
         cccd = char.get_descriptor(CCCD_UUID) if char is not None else None
@@ -290,7 +396,11 @@ class DohmClient:
 
     async def _command(self, payload: bytes):
         """Send a command and return its parsed reply."""
+        if self._recovering:
+            raise DohmError("pairing recovery is in progress")
         async with self._lock:
+            if self._recovering:
+                raise DohmError("pairing recovery is in progress")
             raw = await self._exchange(payload)
         message = protocol.parse(raw)
         if isinstance(message, protocol.Failure):
@@ -381,9 +491,7 @@ class DohmClient:
 
     async def set_speed(self, speed: int) -> None:
         if not MIN_SPEED <= speed <= MAX_SPEED:
-            raise ValueError(
-                f"speed must be {MIN_SPEED}..{MAX_SPEED}, got {speed}"
-            )
+            raise ValueError(f"speed must be {MIN_SPEED}..{MAX_SPEED}, got {speed}")
         await self._command(protocol.set_speed(self._device_id, speed))
 
     async def get_speed(self) -> int:

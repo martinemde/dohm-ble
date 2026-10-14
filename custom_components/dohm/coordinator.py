@@ -142,7 +142,8 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
         first: unpair/pair run on their own short-lived connection, and the
         next poll rebuilds the normal one.
         """
-        await self.client.disconnect()
+        # rebond() waits for in-flight commands under the client's lock before
+        # disconnecting. Do not tear their transport down outside that lock.
         outcome = await self.client.rebond(self._fresh_ble_device())
         _LOGGER.warning("re-bonded %s on request: %s", self.address, outcome)
         await self.async_request_refresh()

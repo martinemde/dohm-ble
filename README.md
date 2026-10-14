@@ -2,8 +2,9 @@
 
 Control a Bluetooth **Marpac Dohm** sound machine from Home Assistant as a
 **media player** (on/off + volume). The BLE protocol was reverse-engineered
-from the official app; see [`docs/protocol.md`](docs/protocol.md) and the
-[`docs/reverse-engineering.md`](docs/reverse-engineering.md) runbook.
+from the official app; see [`docs/protocol.md`](docs/protocol.md), the
+[`docs/reverse-engineering.md`](docs/reverse-engineering.md) runbook, and the
+[Android APK findings](docs/android-app.md).
 
 > **Upgrading from 0.1.x?** The Dohm used to be a `fan` entity. It is now a
 > `media_player`, because what you adjust on a sound machine is loudness, not
@@ -41,7 +42,13 @@ from the official app; see [`docs/protocol.md`](docs/protocol.md) and the
   Give it a few minutes first — a link that is merely slow to start looks
   identical, and Home Assistant keeps retrying. If it stays that way, hold the
   top button ~5 seconds and use **Configure → Clear the pairing and pair again**
-  on the integration entry.
+  on the integration entry. BlueZ recovery now reconnects after clearing the
+  bond before requesting a new one; ESPHome pairs on the existing link when
+  possible.
+- **It moved to a different Bluetooth proxy.** HA may select another proxy.
+  If that controller has a stale key, use the same deliberate recovery action.
+  If HA changes controllers during recovery, it reports partial completion;
+  retry on the newly selected controller. See [pairing and proxy recovery](docs/pairing.md).
 
   > The integration will not do this on its own. Earlier versions cleared the
   > pairing automatically after three failed polls, which could not tell a slow
@@ -78,8 +85,13 @@ drifting onboard clock.
 ## Requirements
 
 - A Bluetooth adapter on the Home Assistant host **or** an ESPHome Bluetooth
-  Proxy within range of the Dohm. No external Python packages — the integration
-  is self-contained and uses Home Assistant's bundled Bluetooth stack.
+  Proxy within range of the Dohm. Explicit proxy pairing needs the `PAIRING`
+  feature (ESPHome 2024.3.0 or newer) and a current Home Assistant Bluetooth
+  stack. No external Python packages — the integration is self-contained and
+  uses Home Assistant's bundled Bluetooth stack.
+
+The [pairing audit](docs/pairing.md) explains the connection sequence, backend
+limits, and a read-only check for a bond that survives reconnecting.
 
 ## Developing
 

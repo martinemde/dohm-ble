@@ -4,6 +4,10 @@ How we captured and decoded the Dohm BLE protocol, written so it can be redone
 on a new unit, a new firmware, or a new Mac. Two independent halves: **capture**
 (sniff the official app) and **connect** (drive the device from our own code).
 
+For static APK extraction without connecting to hardware, see
+[Android app protocol extraction](android-app.md). It confirms the schedule
+writers, weekday masks, and clock format missing from the original capture.
+
 ## Part A — Capture the app's traffic (PacketLogger on macOS)
 
 We sniffed the official app instead of guessing. On an Apple Silicon Mac you can
