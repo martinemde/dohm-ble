@@ -17,6 +17,10 @@ from the official app; see [`docs/protocol.md`](docs/protocol.md), the
 
 ## Install (HACS)
 
+Download and install through HACS (Home Assistant Community Store):
+
+[![Open Marpac Dohm in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=martinemde&repository=dohm-ble&category=integration)
+
 1. In HACS, add this repository as a **custom repository** (category:
    *Integration*).
 2. Install **Marpac Dohm** and restart Home Assistant.
