@@ -39,6 +39,10 @@ Download and install through HACS (Home Assistant Community Store):
 
 ## Choose the entity type at setup
 
+Fan controls naturally fit the ten speed steps, but HA groups fans with climate
+controls. A `media_player` fits sound and volume better, though its 0–100%
+volume control must snap to the machine's ten hardware levels.
+
 - **Media player (default):** standard volume controls and volume voice intents.
   Volume 0 is the quietest hardware level, not silence; use turn off for silence.
 - **Fan:** ten speed levels, shown as 10%, 20%, …, 100%. Fan percentage 0 turns
