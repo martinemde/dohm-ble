@@ -66,7 +66,10 @@ and separate import/unit-test results from live HA or hardware tests.
 
 `aiousbwatcher` and `pyserial` are not HA dependencies proper — they are pulled
 in by the `bluetooth` component's import chain via `usb`, and the import fails
-without them.
+without them. Other HA releases can need additional component requirements in
+this standalone environment (HA 2026.10.1 also imports `aiohasupervisor`). Use the
+target HA component manifests to identify those requirements; do not add test-
+environment dependencies to the integration's runtime requirements.
 
 ### What still has no coverage
 
