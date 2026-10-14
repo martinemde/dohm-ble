@@ -1,19 +1,17 @@
 # Marpac Dohm — Home Assistant integration
 
 Control a Bluetooth **Marpac Dohm** sound machine from Home Assistant as a
-**media player** (on/off + volume). The BLE protocol was reverse-engineered
+**media player** (on/off + volume) or a **10-step fan**. Choose one at setup. The BLE protocol was reverse-engineered
 from the official app; see [`docs/protocol.md`](docs/protocol.md), the
 [`docs/reverse-engineering.md`](docs/reverse-engineering.md) runbook, and the
 [Android APK findings](docs/android-app.md).
 
-> **Upgrading from 0.1.x?** The Dohm used to be a `fan` entity. It is now a
-> `media_player`, because what you adjust on a sound machine is loudness, not
-> airflow — and volume is something the rest of Home Assistant already
-> understands. **This changes the entity ID**, so any automation, script, or
-> dashboard card referring to `fan.<your dohm>` needs to point at
-> `media_player.<your dohm>` instead. The old `fan.*` entity is left behind in
-> the registry as unavailable — delete it yourself from **Settings → Devices &
-> Services → Entities**.
+> **Existing installs:** entries without an entity-type choice keep their
+> current media-player behavior. To choose a fan, delete and re-add the
+> integration as described below. Upgrading from the old 0.1.x fan releases can
+> leave an unavailable `fan.*` entry; remove it from **Settings → Devices &
+> Services → Entities** if you no longer use it. Update automations and cards
+> whenever you change between `media_player.*` and `fan.*`.
 
 ## Install (HACS)
 
@@ -29,16 +27,31 @@ Download and install through HACS (Home Assistant Community Store):
 4. Select the discovered **Yogasleep Dohm Connect**. If it is not discovered,
    use **Settings → Devices & Services → Add Integration → Yogasleep Dohm
    Connect** while the device is in pairing mode.
-5. Give it a name and, optionally, an area. The name becomes both the device and
-   the entity name, so it is what voice assistants listen for — worth naming
-   after the room if you have more than one. After this one-time pairing, Home
-   Assistant reconnects on its own.
+5. Choose **Media player (volume)** or **Fan (10 speed steps)**. Give it a
+   name and, optionally, an area. The name becomes the device/entity name used
+   by voice assistants. HA reuses a working bond for normal reconnection.
 
 > **Protect a working pairing.** On the tested device, only one controller
 > connection/bond was usable at a time. A new pairing or a top-button hold can
 > replace the old bond. These are hardware observations, not guarantees for
 > every firmware. Normal reconnection should not require the button. Stop the
 > phone app before using HA; press the button only for deliberate setup/recovery.
+
+## Choose the entity type at setup
+
+- **Media player (default):** standard volume controls and volume voice intents.
+  Volume 0 is the quietest hardware level, not silence; use turn off for silence.
+- **Fan:** ten speed levels, shown as 10%, 20%, …, 100%. Fan percentage 0 turns
+  the machine off. A positive setting powers it on and snaps up to a real level.
+
+Only one entity is created. Both types use the same BLE client and pairing
+recovery. This choice is **not available in Configure/options**.
+
+To change type, delete the integration entry, add it again, and select the new
+type. This changes the entity domain/ID (`media_player.*` ↔ `fan.*`), so update
+related automations, scripts, dashboards, and voice-assistant settings.
+Deleting an HA entry does not itself clear a controller's bond. If that bond
+still works, do not press the pairing button merely to change the entity type.
 
 ## Troubleshooting
 
@@ -61,19 +74,16 @@ The integration never clears a bond automatically after failed polls.
 
 ## What you get
 
-- A **media player** entity (device class *speaker*): turn on/off and set volume
-  across the device's 10 levels. Volume up/down changes exactly one hardware
-  level (10 percentage points), so every press is a real device setting, and
-  the control snaps immediately to the level the Dohm took — drop the slider at
-  43% and it moves to 50% right away rather than after a round-trip.
-- Voice control via the standard volume intents — *"set the white noise to 40
-  percent"*, *"turn the white noise down"* — which a fan entity can't answer.
-- A **device** entry with manufacturer Marpac and model Dohm. Firmware/serial
-  reads and a battery sensor are not implemented.
-
-The Dohm has no silent setting, so volume 0 is the quietest level rather than
-off; use turn off for silence. It plays no media, so no transport controls,
-sources, or metadata are exposed and it is never offered as a playback target.
+- On/off plus the machine's **10 hardware levels**. Controls round positive
+  requests up to the next level: 43% becomes level 5 (50%).
+- **Media player:** device class *speaker*, volume up/down by one hardware
+  level, and standard volume intents such as *"set the white noise to 40
+  percent"*. Setting absolute volume while off also turns the machine on.
+  It plays no media and offers no transport controls or playback target.
+- **Fan:** standard fan on/off and speed controls with ten discrete steps.
+  Turn on without a percentage resumes the current hardware speed.
+- A **device** entry with manufacturer Yogasleep (formerly Marpac) and model
+  Dohm Connect. Firmware/serial reads and a battery sensor are not implemented.
 
 Scheduling is intentionally left to Home Assistant automations rather than the
 device's onboard timer — far more flexible, and it sidesteps the device's

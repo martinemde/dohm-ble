@@ -20,11 +20,25 @@ from homeassistant.config_entries import (
 )
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.core import callback
-from homeassistant.helpers.selector import AreaSelector, AreaSelectorConfig
+from homeassistant.helpers.selector import (
+    AreaSelector,
+    AreaSelectorConfig,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
 from . import protocol
 from .client import DohmClient, DohmError, DohmRebondUnsupported
-from .const import COMMAND_SERVICE_UUID, CONF_AREA, DOMAIN, LOCAL_NAME_PREFIX
+from .const import (
+    COMMAND_SERVICE_UUID,
+    CONF_AREA,
+    CONF_ENTITY_TYPE,
+    DEFAULT_ENTITY_TYPE,
+    DOMAIN,
+    ENTITY_TYPES,
+    LOCAL_NAME_PREFIX,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -100,7 +114,7 @@ class DohmConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_name(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Name the Dohm and say where it is. Submitting confirms the add.
+        """Choose the Dohm's name, area, and entity type. Confirm the add.
 
         Both add paths used to land on the advertised name, which is the model
         plus a MAC. That is unusable the moment there is more than one in the
@@ -113,6 +127,7 @@ class DohmConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._address,
                 user_input[CONF_NAME].strip() or self._suggested_name,
                 user_input.get(CONF_AREA),
+                user_input.get(CONF_ENTITY_TYPE, DEFAULT_ENTITY_TYPE),
             )
         return self.async_show_form(
             step_id="name",
@@ -120,15 +135,28 @@ class DohmConfigFlow(ConfigFlow, domain=DOMAIN):
                 {
                     vol.Required(CONF_NAME, default=self._suggested_name): str,
                     vol.Optional(CONF_AREA): AreaSelector(AreaSelectorConfig()),
+                    vol.Required(
+                        CONF_ENTITY_TYPE, default=DEFAULT_ENTITY_TYPE
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=list(ENTITY_TYPES),
+                            translation_key="entity_type",
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
                 }
             ),
             description_placeholders={"name": self._suggested_name},
         )
 
     def _create_entry(
-        self, address: str, name: str, area: str | None
+        self,
+        address: str,
+        name: str,
+        area: str | None,
+        entity_type: str = DEFAULT_ENTITY_TYPE,
     ) -> ConfigFlowResult:
-        data: dict[str, Any] = {CONF_ADDRESS: address}
+        data: dict[str, Any] = {CONF_ADDRESS: address, CONF_ENTITY_TYPE: entity_type}
         if area:
             data[CONF_AREA] = area
         return self.async_create_entry(title=name, data=data)

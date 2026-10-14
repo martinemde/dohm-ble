@@ -195,5 +195,5 @@ add firmware/serial metadata, which is not currently implemented.
 
 See the [pairing audit](pairing.md) for the missing explicit pairing request
 found in the existing client and the local connection fix. The HA entity
-features remain power/volume only. No BLE connection, pairing, timer change,
+features remain power and speed/volume only, with the entity type chosen at setup. No BLE connection, pairing, timer change,
 or hardware actuation was performed in this extraction.

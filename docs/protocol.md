@@ -139,4 +139,5 @@ See [Android findings](android-app.md) for app quirks and validation steps.
 - Android uses zero-padded ordinary speed writes (`S,<id>,03$`); the existing
   integration's bare decimal (`S,<id>,3$`) is already captured as working.
 - The pure protocol module includes name, clock, and schedule helpers. The
-  client and HA media player still expose only power and volume.
+  client and selected HA entity still expose only power and speed/volume.
+  Setup chooses a media player or ten-step fan; it does not change BLE commands.

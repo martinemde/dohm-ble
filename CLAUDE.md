@@ -49,8 +49,16 @@ uv pip install --python /tmp/dohm-ha-check/bin/python \
 import sys; sys.path.insert(0, '.')
 import custom_components.dohm, custom_components.dohm.client
 import custom_components.dohm.coordinator, custom_components.dohm.config_flow
-import custom_components.dohm.media_player
+import custom_components.dohm.media_player, custom_components.dohm.fan
 print('IMPORTS OK')"
+```
+
+The base test run intentionally skips HA-only entity/setup tests when HA is
+absent. Run those in the separate HA environment too:
+
+```sh
+uv pip install --python /tmp/dohm-ha-check/bin/python pytest pytest-asyncio
+/tmp/dohm-ha-check/bin/python -m pytest
 ```
 
 Import any new platform modules in this check too. Record the actual versions
@@ -67,6 +75,14 @@ tested against a fake, and the volume conversion helpers are pure. But the
 connect path — timing, the racy first attempt, whether a bond is honored — can
 only be verified on hardware. Say so in the release notes rather than implying
 it was tested.
+
+## Entity selection
+
+Entity type is chosen at setup and stored in config-entry data. Entries without
+it default to `media_player`. Options are for bond recovery only; changing type
+requires deletion/re-addition. Load exactly one platform and unload the platform
+actually loaded. Do not add automatic entity-registry migration or bond clearing
+when changing presentation.
 
 ## Releasing
 

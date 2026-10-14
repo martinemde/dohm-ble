@@ -19,6 +19,7 @@ from homeassistant.components.bluetooth import (
 )
 from homeassistant.components.bluetooth.match import BluetoothCallbackMatcher
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -65,6 +66,7 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
         )
         self.client = client
         self.address = address
+        self.loaded_platform: Platform = Platform.MEDIA_PLAYER
 
     def _fresh_ble_device(self):
         """The freshest BLEDevice Home Assistant has, or None."""

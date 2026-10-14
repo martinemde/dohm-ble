@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .const import CONF_ENTITY_TYPE, DEFAULT_ENTITY_TYPE, ENTITY_TYPES
+
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
@@ -46,16 +48,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: DohmConfigEntry) -> bool
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator
-    await hass.config_entries.async_forward_entry_setups(entry, [Platform.MEDIA_PLAYER])
+    entity_type = entry.data.get(CONF_ENTITY_TYPE, DEFAULT_ENTITY_TYPE)
+    if entity_type not in ENTITY_TYPES:
+        entity_type = DEFAULT_ENTITY_TYPE
+    # Keep the loaded platform with its coordinator for symmetric unloading.
+    coordinator.loaded_platform = Platform(entity_type)
+    await hass.config_entries.async_forward_entry_setups(
+        entry, [coordinator.loaded_platform]
+    )
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: DohmConfigEntry) -> bool:
     """Unload a config entry."""
-    from homeassistant.const import Platform
-
     unloaded = await hass.config_entries.async_unload_platforms(
-        entry, [Platform.MEDIA_PLAYER]
+        entry, [entry.runtime_data.loaded_platform]
     )
     if unloaded:
         await entry.runtime_data.client.disconnect()

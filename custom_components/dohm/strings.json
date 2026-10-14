@@ -10,15 +10,17 @@
         }
       },
       "name": {
-        "title": "Name this Dohm",
-        "description": "Setting up {name}.\n\nGive it a name you'd actually say out loud — it becomes the device name and the entity name, so it's what voice assistants listen for. If you have more than one, name them after where they are.",
+        "title": "Set up this Dohm",
+        "description": "Setting up {name}.\n\nChoose one entity type, give it a name you would use for voice control, and optionally select an area. The entity type is fixed at setup; changing it later requires deleting and re-adding this integration.",
         "data": {
           "name": "Name",
-          "area": "Area"
+          "area": "Area",
+          "entity_type": "Entity type"
         },
         "data_description": {
           "name": "For example: Bedroom Dohm",
-          "area": "Optional. You can move it later without this being reapplied."
+          "area": "Optional. You can move it later without this being reapplied.",
+          "entity_type": "Media player uses volume. Fan uses 10 speed steps. Only one entity is created. To change the type later, delete and re-add this integration. The entity_id changes (media_player.* or fan.*), so update automations and dashboards that use it."
         }
       }
     },
@@ -37,13 +39,21 @@
       },
       "rebond": {
         "title": "Clear the pairing and pair again",
-        "description": "Use this only if the Dohm shows as unavailable and stays that way. The Dohm replies only over a paired (encrypted) link, so if Home Assistant is holding a pairing key the device no longer accepts, it will connect and then never answer.\n\nThis clears the key from Home Assistant's side and asks for a new one. The Dohm only grants a pairing while in pairing mode, so hold the top button for ~5 seconds first.\n\nIf the Dohm is simply slow or out of range, do nothing — Home Assistant keeps retrying on its own, and clearing a pairing that still works means another trip to the top button."
+        "description": "Use this only for deliberate pairing recovery. No replies can also mean a slow link, poor range, or notification problems; check the logs before clearing a key.\n\nThis clears the key on the selected Bluetooth controller and requests a new bond. Hold the top button for about five seconds first. That can replace a working pairing.\n\nIf recovery reports partial completion or a controller change, follow its outcome and retry if needed. Ordinary failures are retried without clearing bonds."
       }
     },
     "abort": {
       "rebond_done": "{outcome}",
       "rebond_failed": "Re-pairing did not complete. Check the logs for the error, and make sure the Dohm is powered and in range.",
       "rebond_unsupported": "This Dohm is reached through an adapter that cannot clear pairings. A local Bluetooth adapter or an ESPHome proxy with the pairing feature enabled can do it."
+    }
+  },
+  "selector": {
+    "entity_type": {
+      "options": {
+        "media_player": "Media player (volume)",
+        "fan": "Fan (10 speed steps)"
+      }
     }
   }
 }
