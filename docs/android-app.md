@@ -138,8 +138,10 @@ The app notification parser confirms this exact order.
 
 These semantics are recovered from the Android app. Existing captured
 schedule traffic corroborates the wire format, but delete/disable operation
-has not been tested on hardware here. Slot updates are not atomic; a future
-client should serialize the whole three-write sequence and confirm readback.
+has not been tested on hardware here. Slot updates are not atomic. The
+[standalone client](library.md) now serializes all three writes and verifies
+readback under one operation lock. It stops at the first failure; partial
+updates are possible and it does not roll back.
 
 ### Names and app-only settings
 
@@ -158,8 +160,18 @@ BLE command in this app; the setup screen is guidance for manual adjustment.
 
 `COMMAND_GET_TIME = "t"` and `COMMAND_SET_UNIT_NUMBER = "I"` exist as constants,
 but neither has an outbound caller. The uppercase `I` is used to recognize
-ID replies. This does **not** establish that changing the ID is supported,
-or establish a clock-query reply format. No extra guessed commands were added.
+ID replies. These constants establish letters only, not outbound commands or
+parameters. They do **not** establish that changing the ID is supported or a
+clock-query reply format.
+
+The standalone library explicitly separates experimental helpers:
+`get_time()` sends inferred `t,<id>$` and returns raw `T,...$` bytes, with an
+inferred uppercase response letter and no known field schema.
+`set_device_id(new_device_id)` sends inferred `I,<current>,<new>$`, expects an
+`Ack`, then queries `i$`. The cached ID is invalid until readback succeeds;
+a mismatch retains the actual reported ID and raises `DohmError`. Support,
+accepted values, and persistence remain unproven. Neither helper is used by HA.
+See [the API guide](library.md) for failure and cancellation risks.
 
 ## Connection findings and limits
 
@@ -182,16 +194,23 @@ or establish a clock-query reply format. No extra guessed commands were added.
   expansions; use standard Bluetooth UUIDs and discovered GATT services, not
   blind copies of every app constant.
 
-## Home Assistant next steps
+## Library coverage and Home Assistant boundary
 
-Pure name/time/schedule encoders and a schedule report decoder are implemented
-and unit-tested from this evidence. They do not expose new HA entities or
-client operations by themselves.
-Before adding client operations, match reply types (`Ack`, `NameReport`,
-`ScheduleReport`) and serialize multi-write schedule updates. Then check on
-hardware: read all three slots, save originals, sync clock, alter one unused
-slot with permission, read back, and restore it. Device Information reads can
-add firmware/serial metadata, which is not currently implemented.
+The vendored standalone client now exposes ID discovery, name reads/writes,
+clock writes, schedule reads, and three-write schedule updates with verified
+readback, alongside power and speed. It matches reply types (`Ack`,
+`NameReport`, `ScheduleReport`) and schedule slots. The protocol has no request
+IDs: same-type stale reports and generic acknowledgements cannot be correlated
+reliably after retries or cancellation. Serialization and readback do not
+remove this wire limitation.
+
+Further hardware checks must be deliberate: read all three slots, save
+originals, sync the clock only with permission, alter an unused slot, read
+back, and restore it. No rollback is guaranteed. Standard GATT firmware,
+serial, and battery reads are not implemented. HA does not automatically sync
+names, the clock, or schedules, and does not change device IDs. The
+[standalone API guide](library.md) separates app-derived operations from the
+unproven clock-query and ID-write helpers.
 
 See the [pairing audit](pairing.md) for the missing explicit pairing request
 found in the existing client and the local connection fix. The HA entity

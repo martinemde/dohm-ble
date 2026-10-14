@@ -89,9 +89,9 @@ The integration never clears a bond automatically after failed polls.
 - A **device** entry with manufacturer Yogasleep (formerly Marpac) and model
   Dohm Connect. Firmware/serial reads and a battery sensor are not implemented.
 
-Scheduling is intentionally left to Home Assistant automations rather than the
-device's onboard timer — far more flexible, and it sidesteps the device's
-drifting onboard clock.
+HA scheduling is intentionally left to Home Assistant automations rather than
+the device's onboard timer. The standalone client can read and deliberately
+write onboard schedules; HA does not sync them or the device clock.
 
 ## Requirements
 
@@ -104,10 +104,31 @@ drifting onboard clock.
 The [pairing audit](docs/pairing.md) explains the connection sequence, backend
 limits, and a read-only check for a bond that survives reconnecting.
 
+## Standalone client
+
+The full BLE engine is also usable without Home Assistant from this checkout:
+
+```sh
+uv sync
+uv run python your_script.py
+```
+
+Import `DohmClient` from `custom_components.dohm.client`. Omit `device_id` to
+query the real ID on connect. The client includes power/speed, device names,
+clock writes, schedule reads, and serialized schedule writes with readback.
+Experimental clock queries and ID writes use inferred syntax, not proven
+firmware support. No separate package or publishing step is needed
+(`pyproject.toml` sets `package = false`).
+
+See the [standalone API guide](docs/library.md) for a read-only Bleak scanner
+example, deliberate write examples, errors, and firmware/reply limits. This
+does not add HA features or automatic name, clock, schedule, or ID changes.
+Standard GATT firmware, serial, and battery reads remain unimplemented.
+
 ## Developing
 
-The reverse-engineering engine (`protocol.py`, `client.py`) is vendored inside
-`custom_components/dohm/` and unit-tested without hardware:
+The reverse-engineering engine (`protocol.py`, `client.py`) stays vendored inside
+`custom_components/dohm/` and is unit-tested without hardware:
 
 ```sh
 uv run pytest

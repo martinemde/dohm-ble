@@ -12,9 +12,10 @@ App-derived details below are not a substitute for hardware verification.
   vary by capture/unit; discover them rather than hardcoding an old handle.
   Writable **with response**, **notify**, **not readable** — state arrives only
   via notifications.
-- Also present: Device Information Service `180a` (model/serial/firmware — good
-  for the HA device registry) and Battery Service `180f` with battery level
-  `2a19` `[read,notify]` (a free HA battery sensor later).
+- Also present: Device Information Service `180a` (model/serial/firmware) and
+  Battery Service `180f` with battery level `2a19` `[read,notify]`. Standard GATT
+  firmware, serial, and battery reads are not implemented by the standalone
+  client or HA integration.
 - `aa114b7e-…` (originally mistaken for the characteristic) appears only in the
   advertisement, not the GATT table.
 - All payloads are UTF-8 strings terminated by `$`.
@@ -52,8 +53,11 @@ to know it ahead of time — ask for it:
 The device ID is a required command prefix, not a secret key. BLE pairing/
 encryption is also required on the observed hardware; the ID is not a substitute
 for a bond. Android queries `i$` during new-device setup and stores the reply.
-The current HA client instead derives it from the final three MAC bytes, based
-on the existing hardware observation, not independently confirmed by this APK.
+HA supplies an ID derived from the final three MAC bytes, based on the existing
+hardware observation, not independently confirmed by this APK. Standalone
+`DohmClient(device)` defaults to `device_id=None`: connect enables notifications,
+queries `i$`, and caches the actual ID. An explicitly supplied ID avoids that
+opening query. `get_device_id()` always queries and retains the reported ID.
 
 ## Command table
 
@@ -92,16 +96,18 @@ the original iOS capture polls `m,<id>$` and `s,<id>$` roughly every 5 seconds;
 Android schedules both queries every second. HA currently polls every 30 seconds.
 State comes from the resulting `M,_$` / `S,0_$` notifications, not a GATT read.
 
-## Time (`T`) — protocol helper, not exposed by HA
+## Time (`T`) — standalone operation, not exposed by HA
 
 `T,<id>,HHMM,D$` where `HHMM` is 24h local time (capture showed `2133` = 21:33)
 and `D` is **Monday=1 through Sunday=7**, confirmed by Android's
 `LocalDate.getDayOfWeek().getValue()`. No date/timezone/seconds are sent.
-The app resyncs on pairing/reconnect. Only relevant to onboard scheduling,
-which the HA integration does not use. A `t` constant exists in the APK but
-has no outbound caller or reply parser, so clock queries remain unconfirmed.
+The app resyncs on pairing/reconnect. The standalone `set_time(datetime.time,
+weekday)` sends this command only when called; it discards seconds. Neither
+standalone connect nor HA automatically syncs the clock. Clock changes can
+change active onboard schedules. A `t` constant exists in the APK but has no
+outbound caller or reply parser; the experimental query below is unconfirmed.
 
-## Schedule (`P`/`p`) — protocol helpers, not exposed by HA
+## Schedule (`P`/`p`) — standalone operations, not exposed by HA
 
 Query `p,<id>,N$` returns a consolidated slot:
 
@@ -130,14 +136,56 @@ hardware verification. Overnight scheduling is supported by the app UI, but
 firmware overlap, equal-time, and overnight-day behavior remain untested.
 See [Android findings](android-app.md) for app quirks and validation steps.
 
+The standalone client has `get_schedule(slot)`, `get_schedules()` for all three
+slots, and `set_schedule(slot, start, stop, days, speed)`. The setter validates
+all fields before sending, holds one operation lock for the three writes and
+slot-matched readback, and returns a `ScheduleReport` only after all fields
+match at minute precision. It stops at the first failure. Partial updates are
+possible after failure or cancellation; there is no rollback. Serialization
+is a client guarantee, not a firmware transaction.
+
+## Experimental commands — inferred, not captured or proven
+
+`COMMAND_GET_TIME = "t"` and `COMMAND_SET_UNIT_NUMBER = "I"` in the APK
+establish letters only. They do not establish outbound commands or parameters.
+`I` is also the known ID report letter. The standalone library exposes these
+inferred helpers without asserting firmware support:
+
+| Method | Inferred send | Expected handling (also unproven) |
+|---|---|---|
+| `get_time()` | `t,<id>$` | Raw `T,...$` bytes; uppercase response letter is inferred, fields unknown |
+| `set_device_id(new_device_id)` | `I,<current>,<new>$` | `OK$` (`Ack`), then actual ID query `i$` |
+
+The clock helper does not decode or invent a time schema. Either command can
+be echoed, rejected, or time out. Accepted ID values and persistence are
+unknown. The ID setter invalidates the cached ID before attempting the write,
+and leaves it unknown until readback succeeds. A readback mismatch retains the
+actual reported ID and raises `DohmError`; a match returns that ID. There is no
+rollback guarantee. Changing an ID can break HA's MAC-derived addressing.
+HA never calls these helpers.
+
+## Reply correlation limits
+
+The client matches typed reports, and schedule reads also match the slot.
+Unrelated valid reports are ignored. There are **no request IDs** in this
+protocol. Same-type stale reports and generic acknowledgements (`OK$`) cannot
+be correlated reliably with a current request after retries or cancellation.
+Queue draining, serialization, and verified readback reduce risk but cannot
+prove which request caused a reply. A timeout or cancellation does not prove
+that a write failed; read back state before retrying a deliberate write.
+
 ## Notes for the library
 
 - For an unknown device: pair, enable notifications, query `i$`, then use the
-  returned ID. The HA client currently uses MAC-derived IDs instead.
+  returned ID. Standalone connect does this when no ID is supplied; HA supplies
+  its hardware-observed MAC-derived ID instead.
 - Name and clock commands are housekeeping, not a recovered secret handshake.
   Hardware behavior still depends on bonding and notification setup.
 - Android uses zero-padded ordinary speed writes (`S,<id>,03$`); the existing
   integration's bare decimal (`S,<id>,3$`) is already captured as working.
-- The pure protocol module includes name, clock, and schedule helpers. The
-  client and selected HA entity still expose only power and speed/volume.
-  Setup chooses a media player or ten-step fan; it does not change BLE commands.
+- The pure protocol module and standalone client include name, clock, and
+  schedule operations, plus explicitly experimental clock-query/ID-write
+  helpers. See [the full standalone API](library.md) for usage and errors.
+- The selected HA entity still exposes only power and speed/volume. Setup
+  chooses a media player or ten-step fan; it does not change BLE commands.
+  HA does not sync device names, the clock, or schedules, or change device IDs.

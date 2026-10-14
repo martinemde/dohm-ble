@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from datetime import time
 
-from .const import TERMINATOR
+from .const import MAX_SPEED, MIN_SPEED, TERMINATOR
 
 # --- Decoded message types ---------------------------------------------------
 
@@ -68,10 +68,11 @@ class Failure:
 def device_id_from_address(address: str) -> str:
     """The id a device will answer to, from its BLE address.
 
-    The id is the lower three bytes of the MAC in uppercase hex, no
+    The observed id is the lower three MAC bytes in uppercase hex, no
     separators: ``00:22:A3:01:36:C4`` -> ``0136C4`` (docs/debugging.md).
-    Deriving it beats asking, because asking means ``i$`` -- the opening
-    command on a fresh link, and the slowest, least reliable one there is.
+    HA uses this relation to skip an opening query. It is not suitable for
+    macOS host UUIDs, and an experimental ID write could invalidate it.
+    Standalone callers normally query the actual ID instead.
     """
     return address.replace(":", "").replace("-", "")[-6:].upper()
 
@@ -79,26 +80,33 @@ def device_id_from_address(address: str) -> str:
 def query_id() -> bytes:
     """Ask the device for its id. The only command that needs no id.
 
-    Unused by the integration now that the id is derived; kept because it is
-    the command that revealed the id scheme, and the way to check that
-    derivation against a real device.
+    Standalone connect uses this when no ID is supplied. HA skips it by
+    supplying the observed MAC-derived ID. It can also check that derivation
+    or recover the actual ID after an experimental ID-write attempt.
     """
     return f"i{TERMINATOR}".encode()
 
 
 def query_power(device_id: str) -> bytes:
+    _validate_field(device_id, "device_id")
     return f"m,{device_id}{TERMINATOR}".encode()
 
 
 def query_speed(device_id: str) -> bytes:
+    _validate_field(device_id, "device_id")
     return f"s,{device_id}{TERMINATOR}".encode()
 
 
 def set_power(device_id: str, on: bool) -> bytes:
+    _validate_field(device_id, "device_id")
+    if type(on) is not bool:
+        raise TypeError("on must be a bool")
     return f"M,{device_id},{1 if on else 0}{TERMINATOR}".encode()
 
 
 def set_speed(device_id: str, speed: int) -> bytes:
+    _validate_field(device_id, "device_id")
+    _validate_int(speed, "speed", MIN_SPEED, MAX_SPEED)
     return f"S,{device_id},{speed}{TERMINATOR}".encode()
 
 
@@ -147,6 +155,26 @@ def set_time(device_id: str, value: time, weekday: int) -> bytes:
     _validate_int(weekday, "weekday", 1, 7)
     hhmm = _format_time(value, "time")
     return f"T,{device_id},{hhmm},{weekday}{TERMINATOR}".encode()
+
+
+def query_time(device_id: str) -> bytes:
+    """Experimental: the APK declares t, but never sends it.
+
+    This follows the query grammar; firmware support and reply fields are unknown.
+    """
+    _validate_field(device_id, "device_id")
+    return f"t,{device_id}{TERMINATOR}".encode()
+
+
+def set_device_id(device_id: str, new_device_id: str) -> bytes:
+    """Experimental: inferred I,<current ID>,<new ID>$, not a captured write.
+
+    The APK declares I but uses it only for ID replies. This may be rejected
+    or echoed, and accepted values/persistence are unknown.
+    """
+    _validate_field(device_id, "device_id")
+    _validate_field(new_device_id, "new_device_id")
+    return f"I,{device_id},{new_device_id}{TERMINATOR}".encode()
 
 
 def query_schedule(device_id: str, slot: int) -> bytes:
@@ -233,12 +261,20 @@ def parse(
 
     letter, _, rest = body.partition(",")
     if letter == "I":
+        _validate_field(rest, "device_id")
         return DeviceId(rest)
     if letter == "S":
-        return SpeedReport(int(rest))
+        if re.fullmatch(r"[0-9]+", rest) is None:
+            raise ValueError("speed must be decimal digits")
+        speed = int(rest)
+        _validate_int(speed, "speed", MIN_SPEED, MAX_SPEED)
+        return SpeedReport(speed)
     if letter == "M":
+        if rest not in ("0", "1"):
+            raise ValueError("power must be 0 or 1")
         return PowerReport(rest == "1")
     if letter == "N":
+        _validate_field(rest, "name")
         return NameReport(rest)
     if letter == "P":
         return _parse_schedule(rest)

@@ -4,6 +4,12 @@ Wraps the pure protocol layer with a connection and a request/response loop.
 Connections go through ``bleak-retry-connector``'s ``establish_connection``,
 which works both standalone and inside Home Assistant's Bluetooth stack
 (including ESPHome proxies). A ``connector`` can be injected for testing.
+
+This module imports no Home Assistant APIs. Name, clock, schedule, and
+experimental ID/clock-query operations are library-only; HA uses power/speed.
+Replies are matched by type (and schedule slot), not by request ID: the wire
+protocol cannot distinguish a late same-type report or generic ACK from the
+current reply. Callers must account for this after retries or cancellation.
 """
 
 from __future__ import annotations
@@ -13,13 +19,14 @@ import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
+from datetime import time as wall_time
 from functools import partial
 
 from bleak import BleakBackend
 from bleak.exc import BleakError
 
 from . import protocol
-from .const import CHARACTERISTIC_UUID, MAX_SPEED, MIN_SPEED
+from .const import CHARACTERISTIC_UUID
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -98,6 +105,10 @@ class DohmCommandError(DohmError):
     """The device rejected a command (replied ``Failed NN$``)."""
 
 
+class DohmProtocolError(DohmError):
+    """A notification is malformed or is an unsupported command echo."""
+
+
 class DohmRebondUnsupported(DohmError):
     """The Bluetooth backend can't clear a stored bond.
 
@@ -173,7 +184,7 @@ class DohmClient:
         self,
         ble_device,
         *,
-        device_id: str,
+        device_id: str | None = None,
         connector: Callable[[object], Awaitable[object]] | None = None,
         ble_device_callback: Callable[[], object] | None = None,
     ) -> None:
@@ -190,9 +201,11 @@ class DohmClient:
         )
         self._client = None
         self._notifying = False
-        # Derived from the address, not asked for over the wire: it is the lower
-        # three MAC bytes and the device cannot change it. Asking meant i$ as the
-        # opening command, which is the slowest and least reliable one there is.
+        # HA supplies its hardware-observed MAC-derived ID to avoid an opening
+        # round trip. Standalone callers can omit it (including on macOS, where
+        # the address is a host UUID); connect then asks the device once.
+        if device_id is not None:
+            protocol.query_name(device_id)  # validate without touching hardware
         self._device_id = device_id
         # Has anything on this link actually answered yet? Until it has, every
         # command is the opening command and gets OPENING_TIMEOUT.
@@ -202,7 +215,7 @@ class DohmClient:
         self._recovering = False
 
     @property
-    def device_id(self) -> str:
+    def device_id(self) -> str | None:
         return self._device_id
 
     @property
@@ -216,6 +229,8 @@ class DohmClient:
             if self._recovering:
                 raise DohmError("pairing recovery is in progress")
             if self.is_connected:
+                if self._device_id is None:
+                    await self._get_device_id()
                 return
             await self._connect(ble_device)
 
@@ -233,6 +248,8 @@ class DohmClient:
         try:
             self._opened = False
             await self._subscribe()
+            if self._device_id is None:
+                await self._get_device_id()
             _LOGGER.debug("connected; device id %s", self._device_id)
         except BaseException:
             await self._drop()
@@ -394,28 +411,73 @@ class DohmClient:
         except Exception as err:  # noqa: BLE001 - best-effort; may already be armed
             _LOGGER.debug("CCCD re-arm failed on handle 0x%04x: %s", cccd.handle, err)
 
-    async def _command(self, payload: bytes):
-        """Send a command and return its parsed reply."""
+    def _check_ready(self) -> None:
         if self._recovering:
             raise DohmError("pairing recovery is in progress")
+        if not self.is_connected:
+            raise DohmError("not connected; call connect() first")
+
+    def _require_device_id(self) -> str:
+        if self._device_id is None:
+            raise DohmError("device ID is unknown; call connect() first")
+        return self._device_id
+
+    async def _command[T](
+        self,
+        build_payload: Callable[[str], bytes],
+        reply_type: type[T],
+        *,
+        matches: Callable[[T], bool] | None = None,
+    ) -> T:
+        """Build/send under the lock so a concurrent ID change cannot stale it."""
+        self._check_ready()
         async with self._lock:
-            if self._recovering:
-                raise DohmError("pairing recovery is in progress")
-            raw = await self._exchange(payload)
+            self._check_ready()
+            payload = build_payload(self._require_device_id())
+            return await self._request(payload, reply_type, matches=matches)
+
+    async def _request[T](
+        self,
+        payload: bytes,
+        reply_type: type[T],
+        *,
+        matches: Callable[[T], bool] | None = None,
+    ) -> T:
+        """Exchange a typed reply. The caller must hold the operation lock."""
+
+        def accepts(raw: bytes) -> bool:
+            try:
+                message = protocol.parse(raw)
+            except ValueError as err:
+                raise DohmProtocolError(
+                    f"invalid reply {raw!r} to {payload!r}"
+                ) from err
+            return isinstance(message, protocol.Failure) or (
+                isinstance(message, reply_type)
+                and (matches is None or matches(message))
+            )
+
+        raw = await self._exchange(payload, accepts)
         message = protocol.parse(raw)
         if isinstance(message, protocol.Failure):
             raise DohmCommandError(f"device rejected {payload!r}: {message.code}")
         return message
 
-    async def _exchange(self, payload: bytes) -> bytes:
+    async def _exchange(
+        self, payload: bytes, accepts: Callable[[bytes], bool]
+    ) -> bytes:
         """One request/reply, with the opening command handled as its own case."""
         if self._opened:
-            return await self._send(payload, COMMAND_TIMEOUT, drop_on_failure=True)
+            return await self._send(
+                payload, COMMAND_TIMEOUT, accepts=accepts, drop_on_failure=True
+            )
 
         last_err: TimeoutError | None = None
         for attempt in range(1, OPENING_ATTEMPTS + 1):
             try:
-                raw = await self._send(payload, OPENING_TIMEOUT, drop_on_failure=False)
+                raw = await self._send(
+                    payload, OPENING_TIMEOUT, accepts=accepts, drop_on_failure=False
+                )
             except TimeoutError as err:
                 # Silence on a fresh link is not evidence the link is bad; it is
                 # what a slow first notify looks like. Ask again on the same
@@ -444,8 +506,21 @@ class DohmClient:
         await self._drop()
         raise last_err
 
+    def _take_matching_queued(self, accepts: Callable[[bytes], bool]) -> bytes | None:
+        """Salvage a matching late frame without extending the reply deadline."""
+        for _ in range(self._queue.qsize()):
+            raw = self._queue.get_nowait()
+            if accepts(raw):
+                return raw
+        return None
+
     async def _send(
-        self, payload: bytes, timeout: float, *, drop_on_failure: bool
+        self,
+        payload: bytes,
+        timeout: float,
+        *,
+        accepts: Callable[[bytes], bool],
+        drop_on_failure: bool,
     ) -> bytes:
         await self._rearm_notify()
         while not self._queue.empty():
@@ -456,14 +531,26 @@ class DohmClient:
                 CHARACTERISTIC_UUID, payload, response=True
             )
             acked = time.monotonic()
-            try:
-                raw = await asyncio.wait_for(self._queue.get(), timeout)
-            except TimeoutError:
-                # wait_for can give up with the notify already queued. Taking
-                # that frame costs nothing; discarding it costs a reconnect.
-                if self._queue.empty():
-                    raise
-                raw = self._queue.get_nowait()
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raw = self._take_matching_queued(accepts)
+                    if raw is None:
+                        raise TimeoutError(f"no matching reply to {payload!r}")
+                    break
+                try:
+                    raw = await asyncio.wait_for(self._queue.get(), remaining)
+                except TimeoutError:
+                    # Drain a bounded snapshot: a valid late reply can sit
+                    # behind an unrelated report when wait_for loses the race.
+                    raw = self._take_matching_queued(accepts)
+                    if raw is None:
+                        raise
+                    break
+                if accepts(raw):
+                    break
+                _LOGGER.debug("ignoring unrelated reply %r to %r", raw, payload)
             # The ack/reply split is the diagnostic that matters: a device that
             # acks fast and then never answers has gone notify-deaf, while a
             # slow ack means the link itself is struggling.
@@ -489,16 +576,172 @@ class DohmClient:
             raise
         return raw
 
+    async def _get_device_id(self) -> str:
+        report = await self._request(protocol.query_id(), protocol.DeviceId)
+        self._device_id = report.value
+        return report.value
+
+    async def get_device_id(self) -> str:
+        """Query and retain the actual ID; never change the device's ID."""
+        self._check_ready()
+        async with self._lock:
+            self._check_ready()
+            return await self._get_device_id()
+
     async def set_speed(self, speed: int) -> None:
-        if not MIN_SPEED <= speed <= MAX_SPEED:
-            raise ValueError(f"speed must be {MIN_SPEED}..{MAX_SPEED}, got {speed}")
-        await self._command(protocol.set_speed(self._device_id, speed))
+        await self._command(
+            lambda device_id: protocol.set_speed(device_id, speed), protocol.Ack
+        )
 
     async def get_speed(self) -> int:
-        return (await self._command(protocol.query_speed(self._device_id))).speed
+        return (await self._command(protocol.query_speed, protocol.SpeedReport)).speed
 
     async def set_power(self, on: bool) -> None:
-        await self._command(protocol.set_power(self._device_id, on))
+        await self._command(
+            lambda device_id: protocol.set_power(device_id, on), protocol.Ack
+        )
 
     async def get_power(self) -> bool:
-        return (await self._command(protocol.query_power(self._device_id))).on
+        return (await self._command(protocol.query_power, protocol.PowerReport)).on
+
+    async def get_name(self) -> str:
+        return (await self._command(protocol.query_name, protocol.NameReport)).name
+
+    async def set_name(self, name: str) -> None:
+        """Set the device's own name, independently of any HA entity name."""
+        await self._command(
+            lambda device_id: protocol.set_name(device_id, name), protocol.Ack
+        )
+
+    async def set_time(self, value: wall_time, weekday: int) -> None:
+        """Set local HHMM and ISO weekday (Monday=1 … Sunday=7).
+
+        Seconds are discarded. No automatic sync occurs on connect: changing
+        the clock can change when existing onboard schedules operate.
+        """
+        await self._command(
+            lambda device_id: protocol.set_time(device_id, value, weekday), protocol.Ack
+        )
+
+    async def get_time(self) -> bytes:
+        """Experimental clock query; return a raw T,...$ reply, not a guessed schema.
+
+        Only the command letter is declared by the APK. Query parameters,
+        firmware support and reply format remain unverified. An echo or malformed
+        frame raises DohmProtocolError; a rejection raises DohmCommandError.
+        """
+        self._check_ready()
+        async with self._lock:
+            self._check_ready()
+            payload = protocol.query_time(self._require_device_id())
+
+            def accepts(raw: bytes) -> bool:
+                try:
+                    text = raw.decode()
+                    if not text.endswith("$") or "$" in text[:-1]:
+                        raise ValueError("invalid frame")
+                    # Preserve unknown clock fields verbatim. Matching the
+                    # uppercase reply letter is inferred from other queries.
+                    if text.startswith("T,"):
+                        return True
+                    message = protocol.parse(raw)
+                except ValueError as err:
+                    raise DohmProtocolError(
+                        f"invalid experimental clock reply {raw!r}"
+                    ) from err
+                return isinstance(message, protocol.Failure)
+
+            raw = await self._exchange(payload, accepts)
+            if raw.startswith(b"Failed"):
+                failure = protocol.parse(raw)
+                raise DohmCommandError(f"device rejected {payload!r}: {failure.code}")
+            return raw
+
+    async def set_device_id(self, new_device_id: str) -> str:
+        """Experimental ID write using inferred syntax, then query the actual ID.
+
+        This can break the observed MAC-to-ID relation. After attempting the
+        write, the cached ID stays unknown until readback succeeds, even on
+        timeout/cancellation. No assumption about persistence or rollback is made.
+        HA never calls this method; changing IDs can invalidate its derived ID.
+        """
+        self._check_ready()
+        async with self._lock:
+            self._check_ready()
+            payload = protocol.set_device_id(self._require_device_id(), new_device_id)
+            self._device_id = None
+            await self._request(payload, protocol.Ack)
+            actual = await self._get_device_id()
+            if actual != new_device_id:
+                raise DohmError(
+                    f"device ID readback mismatch: expected {new_device_id!r}, "
+                    f"got {actual!r}"
+                )
+            return actual
+
+    async def get_schedule(self, slot: int) -> protocol.ScheduleReport:
+        return await self._command(
+            lambda device_id: protocol.query_schedule(device_id, slot),
+            protocol.ScheduleReport,
+            matches=lambda report: report.slot == slot,
+        )
+
+    async def get_schedules(self) -> tuple[protocol.ScheduleReport, ...]:
+        """Read slots 1–3 without interleaving other client operations."""
+        self._check_ready()
+        async with self._lock:
+            self._check_ready()
+            device_id = self._require_device_id()
+            reports = []
+            for slot in range(1, 4):
+                reports.append(
+                    await self._request(
+                        protocol.query_schedule(device_id, slot),
+                        protocol.ScheduleReport,
+                        matches=lambda report, slot=slot: report.slot == slot,
+                    )
+                )
+            return tuple(reports)
+
+    async def set_schedule(
+        self,
+        slot: int,
+        start: wall_time,
+        stop: wall_time,
+        days: int,
+        speed: int,
+    ) -> protocol.ScheduleReport:
+        """Write a slot's three fields, then verify and return its readback.
+
+        Monday is bit 0 of days; Sunday is bit 6. days=0 disables the slot;
+        speed=0 deletes it (app-derived, not yet hardware-verified). Seconds
+        are discarded. The operation is serialized, not firmware-atomic:
+        failure/cancellation can leave a partial update. No rollback or bond
+        clearing is attempted. Save originals before making deliberate changes.
+        """
+        self._check_ready()
+        async with self._lock:
+            self._check_ready()
+            device_id = self._require_device_id()
+            # Validate every field before the first write.
+            payloads = protocol.set_schedule(device_id, slot, start, stop, days, speed)
+            expected = protocol.ScheduleReport(
+                slot,
+                wall_time(start.hour, start.minute),
+                wall_time(stop.hour, stop.minute),
+                days,
+                speed,
+            )
+            for payload in payloads:
+                await self._request(payload, protocol.Ack)
+            report = await self._request(
+                protocol.query_schedule(device_id, slot),
+                protocol.ScheduleReport,
+                matches=lambda report: report.slot == slot,
+            )
+            if report != expected:
+                raise DohmError(
+                    f"schedule slot {slot} readback mismatch: "
+                    f"expected {expected!r}, got {report!r}; slot may be partially updated"
+                )
+            return report
