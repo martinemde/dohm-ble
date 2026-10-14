@@ -26,7 +26,8 @@ ADVERTISED_SERVICE_UUID = "aa114b7e-92cf-f378-b56d-5d6d1654404b"
 # addresses are host-specific; do not copy them to a different host/backend.
 LOCAL_NAME_PREFIX = "MARPAC_DOHM"
 
-# Speed range accepted by the device: 1..10 (11 returns "Failed 03$").
+# Supported active speeds: 1..10 (11 returns "Failed 03$").
+# Direct S speed-zero behavior is unverified; HA zero uses M power-off.
 MIN_SPEED = 1
 MAX_SPEED = 10
 

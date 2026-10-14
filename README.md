@@ -44,7 +44,10 @@ controls. A `media_player` fits sound and volume better, though its 0–100%
 volume control must snap to the machine's ten hardware levels.
 
 - **Media player (default):** standard volume controls and volume voice intents.
-  Volume 0 is the quietest hardware level, not silence; use turn off for silence.
+  Volume 0 turns the machine off without changing its hardware level. Turn on
+  resumes that level: 30% → 0 → turn on returns to 30%. With no known previous
+  level, turn on starts at 10%. A positive volume powers it on and snaps up to
+  a hardware level.
 - **Fan:** ten speed levels, shown as 10%, 20%, …, 100%. Fan percentage 0 turns
   the machine off. A positive setting powers it on and snaps up to a real level.
 
@@ -82,16 +85,21 @@ The integration never clears a bond automatically after failed polls.
   requests up to the next level: 43% becomes level 5 (50%).
 - **Media player:** device class *speaker*, volume up/down by one hardware
   level, and standard volume intents such as *"set the white noise to 40
-  percent"*. Setting absolute volume while off also turns the machine on.
+  percent"*. Setting a positive absolute volume while off turns the machine on.
+  Setting volume to 0 turns it off and preserves its last hardware level.
   It plays no media and offers no transport controls or playback target.
 - **Fan:** standard fan on/off and speed controls with ten discrete steps.
   Turn on without a percentage resumes the current hardware speed.
 - A **device** entry with manufacturer Yogasleep (formerly Marpac) and model
   Dohm Connect. Firmware/serial reads and a battery sensor are not implemented.
 
-HA scheduling is intentionally left to Home Assistant automations rather than
-the device's onboard timer. The standalone client can read and deliberately
-write onboard schedules; HA does not sync them or the device clock.
+Scheduling is intentionally left to Home Assistant automations even though the
+device has schedule slots. The device's onboard clock drifts over time and loses
+configuration during power outages. Home assistant is a much more reliable
+scheduler.
+
+The standalone client can read and deliberately write onboard schedules; HA
+does not sync them or the device clock.
 
 ## Requirements
 

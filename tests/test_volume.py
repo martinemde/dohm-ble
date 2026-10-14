@@ -5,8 +5,8 @@ import pytest
 from custom_components.dohm.const import MAX_SPEED, MIN_SPEED
 from custom_components.dohm.volume import speed_to_volume, volume_to_speed
 
-
 # --- Reporting the device's speed as a volume level --------------------------
+
 
 @pytest.mark.parametrize(
     ("speed", "volume"),
@@ -17,12 +17,13 @@ def test_speed_maps_onto_the_full_volume_range(speed, volume):
 
 
 def test_slowest_speed_is_not_reported_as_silent():
-    # The Dohm has no silent setting, so its quietest speed must still report
-    # some volume -- 0.0 would render the slider as "off".
+    # Active speed 1 reports positive volume. Entity platforms separately
+    # report zero while off; power is not an input to this helper.
     assert speed_to_volume(MIN_SPEED) > 0
 
 
 # --- Turning a requested volume into a speed the device accepts --------------
+
 
 @pytest.mark.parametrize(
     ("volume", "speed"),
@@ -44,8 +45,8 @@ def test_volume_inside_a_step_rounds_up_to_that_step(volume, speed):
 
 
 def test_zero_volume_clamps_to_the_quietest_speed():
-    # The slider reaches 0.0 but the device cannot go silent, and a media
-    # player at volume 0 is still playing -- turning it off is a separate call.
+    # The helper only maps active speeds. Entity platforms intercept zero
+    # requests and power off instead of sending this clamped speed.
     assert volume_to_speed(0.0) == MIN_SPEED
 
 

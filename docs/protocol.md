@@ -86,8 +86,11 @@ opening query. `get_device_id()` always queries and retains the reported ID.
 - `S,<id>,N$` sets speed; reply `OK$`. Value is the bare integer, 1–2 digits
   (`S,<id>,3$`, `S,<id>,10$`).
 - `s,<id>$` returns `S,0N$` (zero-padded two digits).
-- **Confirmed range: 1–10.** `S,<id>,11$` returns `Failed 03$`. HA maps these
-  10 hardware levels to its entity's volume/speed controls.
+- **Observed active levels: 1–10.** `S,<id>,11$` returns `Failed 03$`. HA maps
+  these 10 hardware levels to its entity's volume/speed controls. Saved
+  evidence does not establish the firmware response to `S,<id>,0$`.
+  The library accepts active speeds 1–10; HA volume/percentage 0 instead sends
+  the known power-off command `M,<id>,0$` and preserves the last speed.
 
 ## State reads
 

@@ -104,13 +104,18 @@ class DohmMediaPlayer(CoordinatorEntity[DohmCoordinator], MediaPlayerEntity):
 
     @property
     def volume_level(self) -> float:
+        if not self.coordinator.data.power:
+            return 0.0
         return speed_to_volume(self.coordinator.data.speed)
 
     async def async_set_volume_level(self, volume: float) -> None:
+        if volume <= 0:
+            await self.async_turn_off()
+            return
         speed = volume_to_speed(volume)
-        # Adjusting the volume on a device that is off is a request to hear it.
+        # A positive volume on a device that is off is a request to hear it.
         if not self.coordinator.data.power:
-            await self.coordinator.async_set_power(True)
+            await self.async_turn_on()
         await self.coordinator.async_set_speed(speed)
 
     async def async_volume_up(self) -> None:
@@ -128,6 +133,12 @@ class DohmMediaPlayer(CoordinatorEntity[DohmCoordinator], MediaPlayerEntity):
         await self.coordinator.async_set_speed(speed)
 
     async def async_turn_on(self) -> None:
+        # Zero on the slider is power state, not a stored hardware speed.
+        # Normally the last positive speed survives power-off. If it is
+        # unknown, seed the quietest active level before turning on.
+        speed = getattr(self.coordinator.data, "speed", None)
+        if type(speed) is not int or not MIN_SPEED <= speed <= MAX_SPEED:
+            await self.coordinator.async_set_speed(MIN_SPEED)
         await self.coordinator.async_set_power(True)
 
     async def async_turn_off(self) -> None:

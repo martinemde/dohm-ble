@@ -102,8 +102,10 @@ promise that every firmware accepts them. See [protocol](protocol.md) and
 
 Names and IDs must be nonempty strings without `,`, `$`, or control characters.
 The Android UI allows ten alphanumeric name characters; the encoder does not
-impose that unproven firmware limit. Ordinary speeds are 1–10; zero is not a
-live speed or silence setting. Use power off for silence.
+impose that unproven firmware limit. Library active-speed operations accept
+1–10. HA interprets media-player volume 0 or fan percentage 0 as power off,
+without sending a speed write. Firmware behavior for a direct `S,<id>,0$`
+command is not established by the saved evidence.
 
 Clock writes send local `HHMM` and weekday only. Seconds are discarded; no date,
 timezone, or DST is sent. Connecting does not sync the clock. Clock changes can
