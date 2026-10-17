@@ -116,31 +116,18 @@ async def test_poll_cannot_publish_old_power_after_a_media_command(setup):
     client.set_power.assert_awaited_once_with(True)
 
 
-async def test_speed_ack_waits_for_normal_poll_and_external_changes_are_read(setup):
+async def test_speed_ack_uses_debounced_confirmation_to_read_external_changes(setup):
     coordinator, client, _ = setup
     coordinator.async_request_refresh = AsyncMock()
     await coordinator.async_set_speed(7)
     assert coordinator.data == DohmState(power=False, speed=7)
     coordinator.async_request_refresh.assert_not_awaited()
 
-    # The next ordinary poll is authoritative, including physical controls.
+    # Debounced confirmation is authoritative, including physical controls.
     client.get_power.return_value = True
     client.get_speed.return_value = 3
     await coordinator.test_timers[-1].action(None)
     assert coordinator.data == DohmState(power=True, speed=3)
-
-
-async def test_failed_power_command_does_not_publish_requested_state(setup):
-    coordinator, client, media = setup
-    client.set_power.side_effect = RuntimeError("write failed")
-    with pytest.raises(RuntimeError, match="write failed"):
-        await media.async_turn_on()
-    assert media.state == MediaPlayerState.OFF
-    assert coordinator.data.speed == 5
-
-    client.set_power.side_effect = None
-    await media.async_turn_on()
-    assert media.state == MediaPlayerState.PLAYING
 
 
 async def test_rapid_power_and_volume_debounce_only_readback(setup):
@@ -325,6 +312,7 @@ async def test_failed_write_still_confirms_actual_state_after_idle(setup):
     with pytest.raises(RuntimeError, match="reply lost"):
         await media.async_turn_on()
     assert media.state == MediaPlayerState.OFF
+    assert coordinator.data.speed == 5
     assert coordinator._pending_controls == 0
 
     # The device may have applied a write even though its reply was lost.
@@ -332,6 +320,12 @@ async def test_failed_write_still_confirms_actual_state_after_idle(setup):
     await coordinator.test_timers[-1].action(None)
     assert media.state == MediaPlayerState.PLAYING
     client.set_power.assert_awaited_once_with(True)
+
+    client.set_power.side_effect = None
+    await media.async_turn_off()
+    assert media.state == MediaPlayerState.OFF
+    assert client.set_power.await_count == 2
+    client.set_power.assert_awaited_with(False)
 
 
 async def test_shutdown_during_write_does_not_schedule_readback(setup):

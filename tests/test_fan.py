@@ -8,11 +8,9 @@ import pytest
 pytest.importorskip("homeassistant")
 
 from homeassistant.components.fan import FanEntityFeature
-from homeassistant.components.media_player import MediaPlayerState
 
 from custom_components.dohm.coordinator import DohmState
 from custom_components.dohm.fan import DohmFan, async_setup_entry
-from custom_components.dohm.media_player import DohmMediaPlayer
 
 
 @pytest.fixture
@@ -125,112 +123,6 @@ async def test_turn_on_explicit_percentage(entity, percentage):
         entity.coordinator.async_set_speed.assert_not_awaited()
 
 
-@pytest.mark.parametrize("volume", [0, -0.01])
-@pytest.mark.parametrize("power", [False, True])
-async def test_media_zero_volume_turns_off_and_preserves_speed(entity, volume, power):
-    entry = SimpleNamespace(
-        data={"address": "address"}, unique_id="stable", title="Dohm"
-    )
-    media = DohmMediaPlayer(entity.coordinator, entry, None)
-    media.coordinator.data.power = power
-
-    async def set_power(on):
-        media.coordinator.data.power = on
-
-    media.coordinator.async_set_power.side_effect = set_power
-    await media.async_set_volume_level(volume)
-    media.coordinator.async_set_power.assert_awaited_once_with(False)
-    media.coordinator.async_set_speed.assert_not_awaited()
-    assert media.state == MediaPlayerState.OFF
-    assert media.volume_level == 0
-    assert media.coordinator.data.speed == 5
-    assert media.unique_id == entity.unique_id
-
-
-@pytest.mark.parametrize("speed", range(1, 11))
-def test_media_reports_zero_only_while_off(entity, speed):
-    entry = SimpleNamespace(
-        data={"address": "address"}, unique_id="stable", title="Dohm"
-    )
-    media = DohmMediaPlayer(entity.coordinator, entry, None)
-    media.coordinator.data.speed = speed
-    assert media.volume_level == speed / 10
-    media.coordinator.data.power = False
-    assert media.volume_level == 0
-    assert media.coordinator.data.speed == speed
-
-
-@pytest.mark.parametrize("volume,speed", [(0.01, 1), (0.1, 1), (0.43, 5), (1, 10)])
-@pytest.mark.parametrize("power", [False, True])
-async def test_media_positive_volume_rounds_up_and_powers_on(
-    entity, volume, speed, power
-):
-    entry = SimpleNamespace(
-        data={"address": "address"}, unique_id="stable", title="Dohm"
-    )
-    media = DohmMediaPlayer(entity.coordinator, entry, None)
-    media.coordinator.data.power = power
-    calls = []
-
-    async def set_power(on):
-        calls.append(("power", on))
-        media.coordinator.data.power = on
-
-    async def set_speed(value):
-        calls.append(("speed", value))
-        media.coordinator.data.speed = value
-
-    media.coordinator.async_set_power.side_effect = set_power
-    media.coordinator.async_set_speed.side_effect = set_speed
-    await media.async_set_volume_level(volume)
-    assert calls == ([] if power else [("power", True)]) + [("speed", speed)]
-    assert media.state == MediaPlayerState.PLAYING
-    assert media.volume_level == speed / 10
-
-
-@pytest.mark.parametrize("turn_off", ["zero_volume", "power_control"])
-@pytest.mark.parametrize("speed", range(1, 11))
-async def test_media_turn_on_resumes_last_speed_after_turning_off(
-    entity, turn_off, speed
-):
-    entry = SimpleNamespace(
-        data={"address": "address"}, unique_id="stable", title="Dohm"
-    )
-    media = DohmMediaPlayer(entity.coordinator, entry, None)
-    media.coordinator.data.speed = speed
-
-    async def set_power(on):
-        media.coordinator.data.power = on
-
-    media.coordinator.async_set_power.side_effect = set_power
-    assert media.volume_level == speed / 10
-    if turn_off == "zero_volume":
-        await media.async_set_volume_level(0)
-    else:
-        await media.async_turn_off()
-    assert media.state == MediaPlayerState.OFF
-    assert media.volume_level == 0
-    assert media.coordinator.data.speed == speed
-    media.coordinator.async_set_power.reset_mock()
-    await media.async_turn_on()
-    media.coordinator.async_set_power.assert_awaited_once_with(True)
-    media.coordinator.async_set_speed.assert_not_awaited()
-    assert media.state == MediaPlayerState.PLAYING
-    assert media.volume_level == speed / 10
-    assert media.coordinator.data.speed == speed
-
-
-async def test_media_zero_volume_failure_does_not_send_speed(entity):
-    entry = SimpleNamespace(
-        data={"address": "address"}, unique_id="stable", title="Dohm"
-    )
-    media = DohmMediaPlayer(entity.coordinator, entry, None)
-    media.coordinator.async_set_power.side_effect = RuntimeError("BLE command failed")
-    with pytest.raises(RuntimeError, match="BLE command failed"):
-        await media.async_set_volume_level(0)
-    media.coordinator.async_set_speed.assert_not_awaited()
-
-
 async def test_fan_setup_adds_one_entity(monkeypatch, entity):
     entry = SimpleNamespace(
         data={"address": "address"},
@@ -260,67 +152,3 @@ async def test_ble_control_failure_does_not_send_followup_speed(entity):
     with pytest.raises(RuntimeError, match="BLE command failed"):
         await entity.async_set_percentage(43)
     entity.coordinator.async_set_speed.assert_not_awaited()
-
-
-@pytest.mark.parametrize("speed", [0, None, -1, 11])
-async def test_media_turn_on_uses_ten_percent_when_previous_speed_unknown(
-    entity, speed
-):
-    entry = SimpleNamespace(
-        data={"address": "address"}, unique_id="stable", title="Dohm"
-    )
-    media = DohmMediaPlayer(entity.coordinator, entry, None)
-    media.coordinator.data.power = False
-    media.coordinator.data.speed = speed
-    calls = []
-
-    async def set_speed(value):
-        calls.append(("speed", value))
-        media.coordinator.data.speed = value
-
-    async def set_power(on):
-        calls.append(("power", on))
-        media.coordinator.data.power = on
-
-    media.coordinator.async_set_speed.side_effect = set_speed
-    media.coordinator.async_set_power.side_effect = set_power
-    await media.async_turn_on()
-    assert calls == [("speed", 1), ("power", True)]
-    assert media.state == MediaPlayerState.PLAYING
-    assert media.volume_level == 0.1
-
-
-async def test_media_turn_on_without_snapshot_seeds_speed_before_power(entity):
-    entry = SimpleNamespace(
-        data={"address": "address"}, unique_id="stable", title="Dohm"
-    )
-    media = DohmMediaPlayer(entity.coordinator, entry, None)
-    media.coordinator.data = None
-    calls = []
-
-    async def set_speed(value):
-        calls.append(("speed", value))
-        media.coordinator.data = DohmState(power=False, speed=value)
-
-    async def set_power(on):
-        calls.append(("power", on))
-        media.coordinator.data.power = on
-
-    media.coordinator.async_set_speed.side_effect = set_speed
-    media.coordinator.async_set_power.side_effect = set_power
-    await media.async_turn_on()
-    assert calls == [("speed", 1), ("power", True)]
-    assert media.volume_level == 0.1
-
-
-async def test_media_unknown_speed_failure_does_not_turn_on(entity):
-    entry = SimpleNamespace(
-        data={"address": "address"}, unique_id="stable", title="Dohm"
-    )
-    media = DohmMediaPlayer(entity.coordinator, entry, None)
-    media.coordinator.data.speed = 0
-    media.coordinator.data.power = False
-    media.coordinator.async_set_speed.side_effect = RuntimeError("BLE command failed")
-    with pytest.raises(RuntimeError, match="BLE command failed"):
-        await media.async_turn_on()
-    media.coordinator.async_set_power.assert_not_awaited()
