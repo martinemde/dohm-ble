@@ -6,6 +6,11 @@ from the official app; see [`docs/protocol.md`](docs/protocol.md), the
 [`docs/reverse-engineering.md`](docs/reverse-engineering.md) runbook, and the
 [Android APK findings](docs/android-app.md).
 
+> **0.4.3:** fixes power/volume state snapping back after a command. Controls
+> update on acknowledgment; readback is debounced until one second after the
+> last command completes, so rapid taps do not query unsettled state. Update
+> through HACS and restart Home Assistant. Keep your configured entries and bonds.
+>
 > **0.4.2:** restores 0.3.0's normal BLE connection behavior after 0.4.0/0.4.1
 > added a required pairing step that can block existing devices. Update through
 > HACS and restart Home Assistant. Keep your configured entries; try reconnecting
