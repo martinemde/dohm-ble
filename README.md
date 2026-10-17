@@ -6,6 +6,11 @@ from the official app; see [`docs/protocol.md`](docs/protocol.md), the
 [`docs/reverse-engineering.md`](docs/reverse-engineering.md) runbook, and the
 [Android APK findings](docs/android-app.md).
 
+> **0.4.4:** sound volume now rounds to the nearest hardware level, with
+> halfway values rounding up: 4% → off, 5% → 10%, 44% → 40%, 45% → 50%.
+> Rounding to off preserves the previous speed. Fan percentage rounding is
+> unchanged. Update through HACS and restart Home Assistant.
+>
 > **0.4.3:** fixes power/volume state snapping back after a command. Controls
 > update on acknowledgment; readback is debounced until one second after the
 > last command completes, so rapid taps do not query unsettled state. Update
