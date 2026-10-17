@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import timedelta
+from functools import partial
 
 from bleak_retry_connector import BLEAK_EXCEPTIONS
 from homeassistant.components.bluetooth import (
@@ -22,6 +25,7 @@ from homeassistant.components.bluetooth.match import BluetoothCallbackMatcher
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .client import DohmClient, DohmError
@@ -29,6 +33,7 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 UPDATE_INTERVAL = timedelta(seconds=30)
+READBACK_DELAY = 1.0
 
 # How long to wait for the Dohm to advertise before calling it out of range.
 # The cache lookup is a single point in time, so on its own it fails a poll that
@@ -70,6 +75,9 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
         # Keep a two-read poll from straddling a control command and publishing
         # its old power/speed after the command's acknowledged state.
         self._operation_lock = asyncio.Lock()
+        self._control_revision = 0
+        self._pending_controls = 0
+        self._cancel_readback: Callable[[], None] | None = None
         self.loaded_platform: Platform = Platform.MEDIA_PLAYER
 
     def _fresh_ble_device(self):
@@ -132,11 +140,19 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
         """
         try:
             async with self._operation_lock:
+                # An ordinary poll must respect the same settling window as
+                # command readback, including controls queued behind this poll.
+                if self._pending_controls or self._cancel_readback is not None:
+                    return self.data
+                revision = self._control_revision
                 await self._ensure_connected()
-                return DohmState(
+                state = DohmState(
                     power=await self.client.get_power(),
                     speed=await self.client.get_speed(),
                 )
+                if revision != self._control_revision:
+                    return self.data
+                return state
         except DohmError as err:
             raise UpdateFailed(str(err)) from err
         except (*BLEAK_EXCEPTIONS, TimeoutError) as err:
@@ -156,15 +172,54 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
         await self.async_request_refresh()
         return outcome
 
+    @asynccontextmanager
+    async def _control_update(self) -> AsyncIterator[None]:
+        # Invalidate reads when the request arrives, not only after the write
+        # gets the lock. Never cancel a BLE exchange just to debounce readback.
+        self._control_revision += 1
+        self._pending_controls += 1
+        self._async_cancel_readback()
+        try:
+            async with self._operation_lock:
+                await self._ensure_connected()
+                yield
+        finally:
+            self._pending_controls -= 1
+            if not self._pending_controls and not self._shutdown_requested:
+                self._cancel_readback = async_call_later(
+                    self.hass,
+                    READBACK_DELAY,
+                    partial(self._async_confirm_controls, self._control_revision),
+                )
+
+    def _async_cancel_readback(self) -> None:
+        if self._cancel_readback is not None:
+            self._cancel_readback()
+            self._cancel_readback = None
+
+    async def _async_confirm_controls(self, revision: int, _now) -> None:
+        if (
+            self._shutdown_requested
+            or self._pending_controls
+            or revision != self._control_revision
+        ):
+            return
+        self._cancel_readback = None
+        # Use a real refresh: async_request_refresh has a separate HA cooldown
+        # and would delay confirmation beyond the trailing one-second timer.
+        await self.async_refresh()
+
+    async def async_shutdown(self) -> None:
+        self._async_cancel_readback()
+        await super().async_shutdown()
+
     async def async_set_power(self, on: bool) -> None:
-        async with self._operation_lock:
-            await self._ensure_connected()
+        async with self._control_update():
             await self.client.set_power(on)
             self._async_snap(power=on)
 
     async def async_set_speed(self, speed: int) -> None:
-        async with self._operation_lock:
-            await self._ensure_connected()
+        async with self._control_update():
             await self.client.set_speed(speed)
             self._async_snap(speed=speed)
 
@@ -181,9 +236,9 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
         round-trip later.
 
         Optimistic only as far as the ack: the command was already ack'd by the
-        time we get here. async_set_updated_data resets the normal poll timer;
-        do not immediately read back a value the firmware may not yet reflect.
-        The next scheduled poll remains authoritative.
+        time we get here. Confirmation is debounced until one second after
+        the last control completes, so rapid taps do not read unsettled state.
+        The normal polling interval still handles external changes.
         """
         if self.data is None:
             return

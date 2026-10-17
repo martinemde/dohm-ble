@@ -30,18 +30,26 @@ limits, and [protocol reference](protocol.md) for command formats.
 
 ## Power or volume snaps back after a command
 
-Control commands publish their acknowledged power/speed without an immediate
-readback. A read immediately after an ACK can still report the previous state.
-The normal **30-second** polling interval confirms the device state instead;
-physical control changes can take until that poll to appear. Polls and commands
-are serialized so a poll cannot read old power, pause for a command, then publish
-that old power after the command's new state.
+Control commands publish their acknowledged power/speed immediately. Only the
+readback is debounced: after the last queued control finishes, wait **one
+second**, then read power and speed. Another tap cancels/restarts that timer;
+commands are not delayed by it. One second is a starting assumption, not a
+measured firmware settling requirement. Confirmation still takes the BLE reply
+round trips after that delay.
 
-This is covered by coordinator tests through the media-player entity, including
-an old immediate power report and a poll in progress during turn-on. It has not
-been verified on hardware. If the state is still wrong at the next normal poll,
-collect the `M,...` command/`m,...` query replies with debug logging below. The
-wire protocol cannot distinguish late same-type replies by request ID.
+Regular polls also respect this settling window. Polls and writes are
+serialized, and a read started before a newer control request cannot publish
+its old snapshot. An already-running BLE read is allowed to finish rather than
+canceling its notification exchange. Readback is authoritative once the controls
+are idle, even if it disagrees with the acknowledged request. It does not resend
+the command to confirm it. The normal **30-second** interval still picks up
+physical control changes outside command confirmation.
+
+Coordinator tests through the media-player entity cover rapid power/volume
+changes, stale in-flight polls, obsolete timers, and shutdown cleanup. This has
+not been verified on hardware. If idle readback is still wrong, collect the
+`M,...` command/`m,...` query replies with debug logging below. The wire protocol
+cannot distinguish late same-type replies by request ID.
 
 ## Enable debug logging
 
