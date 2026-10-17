@@ -65,9 +65,9 @@ def test_media_reports_zero_only_while_off(media, speed):
     assert media.coordinator.data.speed == speed
 
 
-@pytest.mark.parametrize("volume,speed", [(0.01, 1), (0.1, 1), (0.43, 5), (1, 10)])
+@pytest.mark.parametrize("volume,speed", [(0.01, 1), (0.44, 4), (0.45, 5), (1, 10)])
 @pytest.mark.parametrize("power", [False, True])
-async def test_media_positive_volume_rounds_up_and_powers_on(
+async def test_media_positive_volume_rounds_to_nearest_step_and_powers_on(
     media, calls, volume, speed, power
 ):
     media.coordinator.data.power = power

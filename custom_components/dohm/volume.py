@@ -24,9 +24,8 @@ def speed_to_volume(speed: int) -> float:
 def volume_to_speed(volume: float) -> int:
     """Convert a requested volume level to the nearest usable device speed.
 
-    Rounds up so that dragging the slider anywhere inside a positive step
-    lands on that step, and clamps to MIN_SPEED..MAX_SPEED. This helper does
-    not control power: callers must handle zero with a power-off command
-    instead of sending the clamped speed.
+    Round to the nearest level, with halfway values rounding up, and clamp
+    to MIN_SPEED..MAX_SPEED. This helper does not control power: callers must
+    handle zero with a power-off command instead of sending the clamped speed.
     """
-    return min(MAX_SPEED, max(MIN_SPEED, math.ceil(volume * MAX_SPEED)))
+    return min(MAX_SPEED, max(MIN_SPEED, math.floor(volume * MAX_SPEED + 0.5)))

@@ -228,12 +228,10 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
     ) -> None:
         """Publish the value the device actually took, without waiting for a poll.
 
-        The Dohm has ten levels, so a slider dropped at 43% becomes level 5 --
-        50%. Leaving the control at 43% until the confirming poll comes back
-        reads as if the device accepted 43%, which it never can. Publishing the
-        accepted value here makes the control snap to what the Dohm is really
-        doing, and says so at the moment of the change rather than a BLE
-        round-trip later.
+        The Dohm has ten levels. Entity platforms map slider requests to a
+        hardware level before sending them. Publish that level immediately
+        rather than leaving the slider at an unsupported intermediate value
+        until the confirming poll returns.
 
         Optimistic only as far as the ack: the command was already ack'd by the
         time we get here. Confirmation is debounced until one second after

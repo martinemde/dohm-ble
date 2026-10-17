@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.fan import FanEntity, FanEntityFeature
@@ -9,10 +10,10 @@ from homeassistant.const import CONF_ADDRESS
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MANUFACTURER, MAX_SPEED, MODEL, MODEL_ID
+from .const import DOMAIN, MANUFACTURER, MAX_SPEED, MIN_SPEED, MODEL, MODEL_ID
 from .coordinator import DohmCoordinator
 from .media_player import _area_name
-from .volume import speed_to_volume, volume_to_speed
+from .volume import speed_to_volume
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -72,7 +73,7 @@ class DohmFan(CoordinatorEntity[DohmCoordinator], FanEntity):
         if percentage <= 0:
             await self.async_turn_off()
             return
-        speed = volume_to_speed(percentage / 100)
+        speed = min(MAX_SPEED, max(MIN_SPEED, math.ceil(percentage * MAX_SPEED / 100)))
         if not self.is_on:
             await self.coordinator.async_set_power(True)
         await self.coordinator.async_set_speed(speed)

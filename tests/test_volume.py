@@ -36,11 +36,21 @@ def test_exact_steps_round_trip(volume, speed):
 
 @pytest.mark.parametrize(
     ("volume", "speed"),
-    [(0.41, 5), (0.45, 5), (0.49, 5), (0.01, 1), (0.99, 10)],
+    [
+        (0.01, 1),
+        (0.14, 1),
+        (0.15, 2),
+        (0.24, 2),
+        (0.25, 3),
+        (0.35, 4),
+        (0.44, 4),
+        (0.45, 5),
+        (0.94, 9),
+        (0.95, 10),
+        (0.99, 10),
+    ],
 )
-def test_volume_inside_a_step_rounds_up_to_that_step(volume, speed):
-    # Rounding up means any drag past a notch lands on the next one, matching
-    # what the slider shows rather than dropping back down.
+def test_volume_rounds_to_nearest_step_with_halves_up(volume, speed):
     assert volume_to_speed(volume) == speed
 
 
