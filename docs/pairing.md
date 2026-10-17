@@ -32,49 +32,50 @@ Name and clock writes are housekeeping. The app does not rewrite the CCCD for
 every command; that observation in the integration docs came from the earlier
 iOS capture and local hardware experiments.
 
-## Gap in the integration before this change
+## Normal connections: restore the 0.3.0 behavior
 
-`_default_connector()` called `establish_connection()` without `pair=True`.
-In the installed **bleak-retry-connector 4.6.1**, that parameter defaults to
-**False** and is forwarded to the Bleak client. Installed **Bleak 3.0.2** also
-defaults to **False**. Normal setup therefore requested a GATT connection and
-notifications, but **did not explicitly request a bond**. Only the deliberate
-`rebond()` recovery path called `pair()`.
+Version **0.4.2** restores the normal connection policy from **0.3.0**:
+`_default_connector()` calls `establish_connection()` without a `pair` argument
+and never explicitly calls `pair()`. The installed bleak-retry-connector 4.6.1
+and Bleak 3.0.2 default to `pair=False`. Service-cache rediscovery and recovery
+from a stuck notification subscription use the same connector.
 
-This does not prove that no bond was ever established. Some systems pair
-implicitly when an authenticated attribute is accessed; old stored bonds can
-also make the missing request invisible. It does mean pairing was left to
-backend/peripheral side effects rather than requested deliberately.
+The **0.4.0/0.4.1 regression** came from interpreting Android's saved-device
+`createBond()` call as a requirement for every connection. Those releases
+passed `pair=True` and additionally awaited `pair()` on BlueZ. An explicit
+pairing error could then prevent an already-configured device from reaching
+notification setup or power/speed queries. Two previously configured devices
+were reported offline after upgrading, while 0.3.0 worked. Their backend logs
+were not inspected, so this mechanism remains a code-based diagnosis, not a
+confirmed hardware trace.
 
-The local fix requests pairing in both normal `establish_connection()` paths,
-including service-cache rediscovery. The default recovery connector keeps
-`pair=False`, because a stale-key authentication failure must not prevent
-opening the connection needed to clear that key. Recovery explicitly calls
-`unpair()`, reconnects if unpair removed the link, then calls `pair()`.
-Injected test connectors keep their one-argument contract. For BlueZ, normal
-connections also call explicit `pair()` to cover already-connected links where
-`connect(pair=True)` skips its pairing step. A stored valid key is preserved.
+Android issues a bonding request but does not wait for a bond-state event
+before proceeding. That is not proof that every Bleak backend must complete
+an explicit pairing operation before it can use a working link. The fix does
+not discard the APK's command/protocol findings or the guarded recovery path.
+
+Normal connections leave stored keys alone and rely on the backend's existing
+bond/authentication behavior, as 0.3.0 did. They do not promise a new bond or
+that authentication succeeds. Explicit `unpair()` and `pair()` remain confined
+to the user's deliberate `rebond()` recovery action. No bond is automatically
+cleared after silence or connection failure.
 
 ## Backend checks
 
-- **BlueZ / Bleak 3.0.2:** `pair=True` calls D-Bus `Pair` for an unpaired
-  device while establishing a new connection. An existing `Paired` state is
-  reused, not cleared. An already-connected device can bypass this part of
-  `connect()`. Therefore even `pair=True` is not proof of encryption or a
-  matching key in every state. The additional normal BlueZ `pair()` call has
-  a 30-second timeout and releases its client if pairing fails or is canceled.
+- **BlueZ / Bleak 3.0.2:** `pair=True` can introduce a D-Bus `Pair` operation
+  before normal GATT setup. `pair()` can return early for a device already
+  marked paired; it does not prove the peripheral accepts the stored key.
+  Normal connections no longer request either operation explicitly. Deliberate
+  recovery still reconnects after BlueZ unpair removes the device object.
 - **ESPHome / bleak-esphome 4.1.0:** `connect(pair=True)` awaits `_pair()`
-  before service discovery. `pair()` sends a proxy pairing request and raises
-  a BLE error if its response says not paired. This package was inspected in
-  an isolated research environment, not added to integration dependencies.
-- ESPHome explicit pair/unpair require firmware advertising **`PAIRING`**
-  (documented as ESPHome 2024.3.0 or newer). Unsupported firmware raises
-  `NotImplementedError`; the normal connector translates it to an actionable
-  `DohmError` recommending an upgrade. It does not silently skip pairing.
-- **CoreBluetooth / macOS:** Bleak ignores `pair=True`; macOS handles pairing
-  when protected attributes are accessed. Explicit unpair is unsupported.
-- Older HA/bleak-esphome releases may differ. The version deployed on the
-  user's HA host/proxy was not inspected here.
+  before service discovery. Explicit pair/unpair need firmware advertising
+  **`PAIRING`** (documented as ESPHome 2024.3.0 or newer). That capability is
+  needed for deliberate bond recovery, not a new requirement for ordinary
+  connections. This package was inspected in a separate research environment.
+- **CoreBluetooth / macOS:** Bleak handles pairing implicitly when protected
+  attributes are accessed. Explicit unpair is unsupported.
+- The versions deployed on the reporting HA host/proxies were not inspected.
+  Backend behavior can differ across versions.
 
 ## Deliberate stale-bond recovery
 
@@ -82,8 +83,8 @@ Use **Configure → Clear the pairing and pair again** after putting the Dohm in
 pairing mode. Ordinary timeouts never trigger this action automatically.
 
 - Wait for an in-flight protocol command, then close the normal connection.
-- Open a short-lived recovery connection with `pair=False`. A stale key must
-  not prevent reaching the unpair operation.
+- Open a short-lived recovery connection without requesting pairing. A stale
+  key must not prevent reaching the unpair operation.
 - Clear that controller's stored bond exactly once.
 - **ESPHome:** if the link remains connected, request pairing on that link.
 - **BlueZ:** unpair removes the device object and disconnects it. Reconnect
@@ -102,16 +103,16 @@ pairing mode. Ordinary timeouts never trigger this action automatically.
   failed** rather than claiming complete recovery. If unpair itself fails,
   propagate that error rather than claiming the key was removed.
 
-This mirrors the app's saved-device sequence at the relevant level: establish
-connection, request a bond, then use notifications/commands. Clearing stale
+This is deliberate recovery, not the normal reconnect sequence. Clearing stale
 keys is an integration recovery action, not an operation found in the app's
 normal reconnect path.
 
 ## Moving between Bluetooth proxies
 
 A proxy change is allowed. Bond keys belong to each controller/proxy, not to a
-shared Home Assistant key store. A normal new connection requests pairing but
-never deletes a stored key. If that proxy has a stale key, use the deliberate
+shared Home Assistant key store. A normal connection does not explicitly
+request pairing or delete a stored key. A different proxy may not have a
+usable bond. If that proxy has a stale key, use the deliberate
 recovery action to clear and re-pair the **currently selected** controller.
 
 HA can select a different controller on each connection based on signal,
@@ -178,5 +179,7 @@ Do not erase a working bond just to run the test.
 7. If only reads fail, inspect authentication and notification logs before
    clearing anything. Use the deliberate recovery action only when needed.
 
-No hardware was connected, actuated, paired, or unpaired during this audit.
-The local pairing change is unit-tested, not yet proven on a live controller.
+No hardware was connected, actuated, paired, or unpaired during this audit or
+the 0.4.2 patch. Pairing-free normal reconnects (including two configured
+clients), cache rediscovery, notification recovery, and explicit bond recovery
+are unit-tested. The patch still needs confirmation on the affected hardware.

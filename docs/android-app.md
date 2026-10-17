@@ -212,7 +212,8 @@ names, the clock, or schedules, and does not change device IDs. The
 [standalone API guide](library.md) separates app-derived operations from the
 unproven clock-query and ID-write helpers.
 
-See the [pairing audit](pairing.md) for the missing explicit pairing request
-found in the existing client and the local connection fix. The HA entity
+See the [pairing audit](pairing.md) for why 0.4.2 removes the mandatory normal
+pairing step added in 0.4.0. Android's bond request does not establish that an
+awaited Bleak pairing result is required on every reconnect. The HA entity
 features remain power and speed/volume only, with the entity type chosen at setup. No BLE connection, pairing, timer change,
 or hardware actuation was performed in this extraction.

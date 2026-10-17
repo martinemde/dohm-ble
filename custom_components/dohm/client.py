@@ -22,7 +22,6 @@ from collections.abc import Awaitable, Callable
 from datetime import time as wall_time
 from functools import partial
 
-from bleak import BleakBackend
 from bleak.exc import BleakError
 
 from . import protocol
@@ -118,14 +117,12 @@ class DohmRebondUnsupported(DohmError):
     """
 
 
-async def _default_connector(
-    ble_device, *, ble_device_callback=None, pair: bool = True
-):
-    """Connect and request pairing, retrying against a fresh BLEDevice.
+async def _default_connector(ble_device, *, ble_device_callback=None):
+    """Connect without explicitly pairing, as in the working 0.3.0 path.
 
-    Pairing is awaited by backends that support ``pair=True`` before commands
-    run. Recovery uses ``pair=False`` so stale keys can be cleared first.
-    CoreBluetooth initiates pairing implicitly on authenticated GATT access.
+    Android's createBond() call is not a portable requirement for an existing
+    link. Let the backend reuse its bond or handle authentication implicitly;
+    explicit unpair/pair belongs only to deliberate rebond() recovery.
 
     Connecting is racy on this device -- the first attempt often comes back
     ``le-connection-abort-by-local`` -- so ``establish_connection`` retrying is
@@ -137,36 +134,12 @@ async def _default_connector(
     from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
     async def establish():
-        try:
-            client = await establish_connection(
-                BleakClientWithServiceCache,
-                ble_device,
-                ble_device.address,
-                ble_device_callback=ble_device_callback,
-                pair=pair,
-            )
-            # BlueZ connect(pair=True) skips Pair if already connected. Explicit
-            # pair() checks the bond even in that case, and preserves valid keys.
-            if pair and getattr(client, "backend_id", None) == BleakBackend.BLUEZ_DBUS:
-                try:
-                    async with asyncio.timeout(REBOND_PAIR_TIMEOUT):
-                        await client.pair()
-                except BaseException:
-                    try:
-                        async with asyncio.timeout(RECOVERY_CLEANUP_TIMEOUT):
-                            await client.disconnect()
-                    except Exception as err:  # noqa: BLE001 - preserve pair failure
-                        _LOGGER.debug("cleanup after pairing failure: %s", err)
-                    raise
-            return client
-        except NotImplementedError as err:
-            if not pair:
-                raise
-            raise DohmError(
-                "Bluetooth backend cannot request pairing; update ESPHome proxy "
-                "firmware to 2024.3.0 or newer (PAIRING support) or use a "
-                "supported adapter"
-            ) from err
+        return await establish_connection(
+            BleakClientWithServiceCache,
+            ble_device,
+            ble_device.address,
+            ble_device_callback=ble_device_callback,
+        )
 
     client = await establish()
     # A connection cut short (e.g. the device's brief connectable window) can
@@ -192,12 +165,7 @@ class DohmClient:
         # Bound into the default connector rather than passed through the
         # connector signature, so an injected test connector stays one-argument.
         self._connector = connector or partial(
-            _default_connector, ble_device_callback=ble_device_callback, pair=True
-        )
-        # Clearing a stale key must not depend on authenticating with that key.
-        # Injected connectors retain the same one-argument interface in both paths.
-        self._rebond_connector = connector or partial(
-            _default_connector, ble_device_callback=ble_device_callback, pair=False
+            _default_connector, ble_device_callback=ble_device_callback
         )
         self._client = None
         self._notifying = False
@@ -330,7 +298,7 @@ class DohmClient:
             self._recovering = False
 
     async def _rebond(self) -> str:
-        client = await self._rebond_connector(self._ble_device)
+        client = await self._connector(self._ble_device)
         try:
             unpair = getattr(client, "unpair", None)
             pair = getattr(client, "pair", None)
@@ -353,7 +321,7 @@ class DohmClient:
                         )
                     # Reuse the public client, whose native BlueZ backend reset
                     # its device path in unpair(). connect() performs discovery
-                    # again. Its recovery constructor still has pair=False.
+                    # again, without requesting pairing before the controller check.
                     from bleak_retry_connector import retry_bluetooth_connection_error
 
                     reconnect = retry_bluetooth_connection_error(attempts=3)(

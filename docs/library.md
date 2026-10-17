@@ -21,8 +21,9 @@ replace a working bond. A successful connection is not proof of a durable bond.
 Save this as `read_dohm.py` at the repository root. With no address argument it
 only lists nearby devices. Copy the intended device's address into a second
 run; on macOS this is a host UUID, not a MAC address. The connected path reads
-state only, but `connect()` can request BLE pairing. Do not use it to replace
-another controller's bond without permission.
+state only. `connect()` no longer explicitly requests BLE pairing, but the
+backend may authenticate implicitly. Do not use another controller to replace
+a working bond without permission.
 
 ```python
 import asyncio

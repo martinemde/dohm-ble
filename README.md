@@ -6,9 +6,11 @@ from the official app; see [`docs/protocol.md`](docs/protocol.md), the
 [`docs/reverse-engineering.md`](docs/reverse-engineering.md) runbook, and the
 [Android APK findings](docs/android-app.md).
 
-> **0.4.1:** media-player volume 0 now turns the machine off. Turn on resumes
-> its previous level, or starts at 10% if no previous level is known. Upgrade
-> through HACS and restart Home Assistant; no re-pairing or re-addition is needed.
+> **0.4.2:** restores 0.3.0's normal BLE connection behavior after 0.4.0/0.4.1
+> added a required pairing step that can block existing devices. Update through
+> HACS and restart Home Assistant. Keep your configured entries; try reconnecting
+> without pressing the top button or clearing bonds first. This patch does not
+> repair keys already replaced or cleared. The other 0.4 features are retained.
 >
 > **Existing installs:** entries without an entity-type choice keep their
 > current media-player entity type. To choose a fan, delete and re-add the
@@ -108,10 +110,10 @@ does not sync them or the device clock.
 ## Requirements
 
 - A Bluetooth adapter on the Home Assistant host **or** an ESPHome Bluetooth
-  Proxy within range of the Dohm. Explicit proxy pairing needs the `PAIRING`
-  feature (ESPHome 2024.3.0 or newer) and a current Home Assistant Bluetooth
-  stack. No external Python packages — the integration is self-contained and
-  uses Home Assistant's bundled Bluetooth stack.
+  Proxy within range of the Dohm. Only deliberate proxy bond recovery needs
+  the `PAIRING` feature (ESPHome 2024.3.0 or newer); ordinary connections do not
+  explicitly request pairing. No external Python packages — the integration is
+  self-contained and uses Home Assistant's bundled Bluetooth stack.
 
 The [pairing audit](docs/pairing.md) explains the connection sequence, backend
 limits, and a read-only check for a bond that survives reconnecting.

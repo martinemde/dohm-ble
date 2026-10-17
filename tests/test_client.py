@@ -709,26 +709,37 @@ async def test_default_connector_without_a_callback_still_connects(monkeypatch):
     assert calls == [None]
 
 
-async def test_default_connector_requests_pairing(monkeypatch):
+@pytest.mark.parametrize("backend", ["proxy", "bluez"])
+@pytest.mark.parametrize("pair_error", [NotImplementedError, BleakError])
+async def test_normal_connection_works_without_explicit_pairing(
+    monkeypatch, backend, pair_error
+):
     import bleak_retry_connector
 
-    calls = []
-    fake = FakeDohm()
+    fake = FakeBlueZ() if backend == "bluez" else FakeDohm()
 
-    async def fake_establish(client_class, device, name, **kwargs):
-        calls.append(kwargs)
+    async def cannot_pair():
+        fake.bond_calls.append("pair")
+        raise pair_error("explicit pairing unavailable on a working link")
+
+    async def establish(*args, **kwargs):
+        # Model backends that reject pair=True even though GATT already works.
+        if kwargs.get("pair", False):
+            await fake.pair()
         return fake
 
-    monkeypatch.setattr(bleak_retry_connector, "establish_connection", fake_establish)
-    client = DohmClient(ble_device=FakeBLEDevice(), device_id=DEVICE_ID)
+    fake.pair = cannot_pair
+    monkeypatch.setattr(bleak_retry_connector, "establish_connection", establish)
+    client = DohmClient(FakeBLEDevice(), device_id=DEVICE_ID)
     await client.connect()
 
-    assert calls[0]["pair"] is True
-    assert fake._notify is not None
+    assert await client.get_power() is True
+    assert await client.get_speed() == 2
+    assert fake.bond_calls == []
+    await client.disconnect()
 
 
-@pytest.mark.parametrize("pair", [True, False])
-async def test_cache_rediscovery_preserves_pairing_request(monkeypatch, pair):
+async def test_cache_rediscovery_does_not_request_pairing(monkeypatch):
     import bleak_retry_connector
 
     calls = []
@@ -752,13 +763,14 @@ async def test_cache_rediscovery_preserves_pairing_request(monkeypatch, pair):
         return FakeBLEDevice()
 
     result = await client_module._default_connector(
-        FakeBLEDevice(), ble_device_callback=refresh, pair=pair
+        FakeBLEDevice(), ble_device_callback=refresh
     )
 
     assert result is complete
     assert incomplete.cache_cleared
     assert not incomplete.is_connected
-    assert [call["pair"] for call in calls] == [pair, pair]
+    assert all(not call.get("pair", False) for call in calls)
+    assert incomplete.bond_calls == complete.bond_calls == []
     assert [call["ble_device_callback"] for call in calls] == [refresh, refresh]
 
 
@@ -770,8 +782,8 @@ async def test_rebond_default_connector_skips_pairing_until_key_is_cleared(monke
 
     async def fake_establish(client_class, device, name, **kwargs):
         calls.append(kwargs)
-        # If this were True, the stale key could fail before unpair is reached.
-        assert kwargs["pair"] is False
+        # Explicit pairing could fail before unpair is reached.
+        assert not kwargs.get("pair", False)
         return fake
 
     monkeypatch.setattr(bleak_retry_connector, "establish_connection", fake_establish)
@@ -790,37 +802,19 @@ async def test_rebond_default_connector_skips_pairing_until_key_is_cleared(monke
     assert not fake.is_connected
 
 
-async def test_initial_pairing_failure_does_not_report_connected(monkeypatch):
+async def test_initial_connection_failure_does_not_report_connected(monkeypatch):
     import bleak_retry_connector
 
     async def fake_establish(client_class, device, name, **kwargs):
-        assert kwargs["pair"] is True
-        raise BleakError("Pairing failed due to error: 133")
+        assert not kwargs.get("pair", False)
+        raise BleakError("connection failed")
 
     monkeypatch.setattr(bleak_retry_connector, "establish_connection", fake_establish)
     client = DohmClient(ble_device=FakeBLEDevice(), device_id=DEVICE_ID)
 
-    with pytest.raises(BleakError, match="Pairing failed"):
+    with pytest.raises(BleakError, match="connection failed"):
         await client.connect()
 
-    assert not client.is_connected
-    assert not client._notifying
-
-
-async def test_initial_pairing_unsupported_gives_actionable_error(monkeypatch):
-    import bleak_retry_connector
-
-    async def fake_establish(client_class, device, name, **kwargs):
-        assert kwargs["pair"] is True
-        raise NotImplementedError("Pairing is not available in this version ESPHome")
-
-    monkeypatch.setattr(bleak_retry_connector, "establish_connection", fake_establish)
-    client = DohmClient(ble_device=FakeBLEDevice(), device_id=DEVICE_ID)
-
-    with pytest.raises(DohmError, match="2024.3.0 or newer") as exc:
-        await client.connect()
-
-    assert isinstance(exc.value.__cause__, NotImplementedError)
     assert not client.is_connected
     assert not client._notifying
 
@@ -829,7 +823,7 @@ async def test_unpaired_recovery_preserves_unsupported_connect_error(monkeypatch
     import bleak_retry_connector
 
     async def fake_establish(client_class, device, name, **kwargs):
-        assert kwargs["pair"] is False
+        assert not kwargs.get("pair", False)
         raise NotImplementedError("unrelated backend connection feature")
 
     monkeypatch.setattr(bleak_retry_connector, "establish_connection", fake_establish)
@@ -1083,45 +1077,72 @@ async def test_recovery_blocks_normal_connections_commands_and_second_rebond():
     assert not client._recovering
 
 
-async def test_default_bluez_connector_explicitly_checks_pairing_on_existing_link(
-    monkeypatch,
-):
+async def test_two_configured_devices_reconnect_without_pairing(monkeypatch):
     import bleak_retry_connector
 
-    fake = FakeBlueZ()
+    devices = [
+        SimpleNamespace(address="00:22:A3:01:36:C4"),
+        SimpleNamespace(address="00:22:A3:01:36:C5"),
+    ]
+    transports = []
+
+    async def forbidden():
+        raise AssertionError("normal reconnect must not pair or unpair")
+
+    async def establish(client_class, device, name, **kwargs):
+        assert not kwargs.get("pair", False)
+        fake = FakeBlueZ()
+        fake.device_id = device.address.replace(":", "")[-6:]
+        fake.pair = fake.unpair = forbidden
+        transports.append(fake)
+        return fake
+
+    monkeypatch.setattr(bleak_retry_connector, "establish_connection", establish)
+    clients = [
+        DohmClient(device, device_id=device.address.replace(":", "")[-6:])
+        for device in devices
+    ]
+    for _ in range(2):
+        await asyncio.gather(*(client.connect() for client in clients))
+        for client in clients:
+            assert await client.get_power() is True
+            assert await client.get_speed() == 2
+        await asyncio.gather(*(client.disconnect() for client in clients))
+
+    assert len(transports) == 4
+    assert all(not transport.is_connected for transport in transports)
+
+
+async def test_default_connector_notify_recovery_does_not_pair(monkeypatch):
+    import bleak_retry_connector
+
+    stuck = FakeBlueZ()
+    clean = FakeBlueZ()
+    calls = []
+
+    async def fail_notify(*args):
+        raise _notify_acquired_error()
+
+    async def forbidden():
+        raise AssertionError("notify recovery must not pair or unpair")
+
+    stuck.start_notify = fail_notify
+    for fake in [stuck, clean]:
+        fake.pair = fake.unpair = forbidden
 
     async def establish(*args, **kwargs):
-        assert kwargs["pair"] is True
-        return fake  # connect's Pair step may have been skipped on this live link
+        assert not kwargs.get("pair", False)
+        calls.append(kwargs)
+        return stuck if len(calls) == 1 else clean
 
     monkeypatch.setattr(bleak_retry_connector, "establish_connection", establish)
     client = DohmClient(FakeBLEDevice(), device_id=DEVICE_ID)
     await client.connect()
 
-    assert fake.bond_calls == ["pair"]
-    assert client.is_connected
+    assert len(calls) == 2
+    assert not stuck.is_connected
+    assert await client.get_power() is True
     await client.disconnect()
-
-
-async def test_default_bluez_pair_failure_drops_transport(monkeypatch):
-    import bleak_retry_connector
-
-    fake = FakeBlueZ()
-
-    async def establish(*args, **kwargs):
-        return fake
-
-    async def fail():
-        raise BleakError("authentication failed")
-
-    fake.pair = fail
-    monkeypatch.setattr(bleak_retry_connector, "establish_connection", establish)
-    client = DohmClient(FakeBLEDevice(), device_id=DEVICE_ID)
-    with pytest.raises(BleakError, match="authentication failed"):
-        await client.connect()
-
-    assert not fake.is_connected
-    assert not client.is_connected
 
 
 async def test_rebond_unpair_failure_is_not_reported_as_key_cleared():
@@ -1209,7 +1230,7 @@ async def test_deliberate_repair_can_fix_the_newly_selected_proxy(monkeypatch):
         keys[proxy._connected_scanner.source] = "new-key"
 
     async def establish(*args, **kwargs):
-        assert kwargs["pair"] is False  # clearing the stale key comes first
+        assert not kwargs.get("pair", False)  # clearing the stale key comes first
         return proxy
 
     proxy.unpair = unpair
@@ -1224,21 +1245,27 @@ async def test_deliberate_repair_can_fix_the_newly_selected_proxy(monkeypatch):
     assert not proxy.is_connected
 
 
-async def test_failed_normal_connection_never_clears_a_proxy_key(monkeypatch):
+async def test_failed_normal_command_never_clears_a_proxy_key(monkeypatch):
     import bleak_retry_connector
 
     proxy = FakeDohm()
 
     async def establish(*args, **kwargs):
-        assert kwargs["pair"] is True
+        assert not kwargs.get("pair", False)
+        return proxy
+
+    async def fail_write(*args, **kwargs):
         raise BleakError("authentication failed on new proxy")
 
+    proxy.write_gatt_char = fail_write
     monkeypatch.setattr(bleak_retry_connector, "establish_connection", establish)
     client = DohmClient(FakeBLEDevice(), device_id=DEVICE_ID)
+    await client.connect()
     with pytest.raises(BleakError, match="authentication failed"):
-        await client.connect()
+        await client.get_power()
 
     assert proxy.bond_calls == []
+    assert not proxy.is_connected
     assert not client.is_connected
 
 
@@ -1340,27 +1367,6 @@ async def test_recovery_waits_for_connection_already_in_progress():
     assert not recovery_client.is_connected
     assert not client.is_connected
     assert not client._recovering
-
-
-async def test_default_bluez_explicit_pair_has_timeout_and_cleans_up(monkeypatch):
-    import bleak_retry_connector
-
-    fake = FakeBlueZ()
-
-    async def establish(*args, **kwargs):
-        return fake
-
-    async def forever():
-        await asyncio.Event().wait()
-
-    fake.pair = forever
-    monkeypatch.setattr(bleak_retry_connector, "establish_connection", establish)
-    monkeypatch.setattr(client_module, "REBOND_PAIR_TIMEOUT", 0.001)
-    client = DohmClient(FakeBLEDevice(), device_id=DEVICE_ID)
-    with pytest.raises(TimeoutError):
-        await client.connect()
-    assert not fake.is_connected
-    assert not client.is_connected
 
 
 async def test_concurrent_connections_do_not_replace_a_live_client():
