@@ -109,11 +109,11 @@ class DohmMediaPlayer(CoordinatorEntity[DohmCoordinator], MediaPlayerEntity):
         return speed_to_volume(self.coordinator.data.speed)
 
     async def async_set_volume_level(self, volume: float) -> None:
-        if volume <= 0:
+        speed = volume_to_speed(volume)
+        if speed == 0:
             await self.async_turn_off()
             return
-        speed = volume_to_speed(volume)
-        # A positive volume on a device that is off is a request to hear it.
+        # An active volume on a device that is off is a request to hear it.
         if not self.coordinator.data.power:
             await self.async_turn_on()
         await self.coordinator.async_set_speed(speed)

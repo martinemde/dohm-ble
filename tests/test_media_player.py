@@ -43,9 +43,11 @@ def media(calls):
     return DohmMediaPlayer(coordinator, entry, None)
 
 
-@pytest.mark.parametrize("volume", [0, -0.01])
+@pytest.mark.parametrize("volume", [0, -0.01, 0.04])
 @pytest.mark.parametrize("power", [False, True])
-async def test_media_zero_volume_turns_off_and_preserves_speed(media, volume, power):
+async def test_media_volume_rounding_to_zero_turns_off_and_preserves_speed(
+    media, volume, power
+):
     media.coordinator.data.power = power
     await media.async_set_volume_level(volume)
     media.coordinator.async_set_power.assert_awaited_once_with(False)
@@ -65,7 +67,7 @@ def test_media_reports_zero_only_while_off(media, speed):
     assert media.coordinator.data.speed == speed
 
 
-@pytest.mark.parametrize("volume,speed", [(0.01, 1), (0.44, 4), (0.45, 5), (1, 10)])
+@pytest.mark.parametrize("volume,speed", [(0.05, 1), (0.44, 4), (0.45, 5), (1, 10)])
 @pytest.mark.parametrize("power", [False, True])
 async def test_media_positive_volume_rounds_to_nearest_step_and_powers_on(
     media, calls, volume, speed, power
@@ -77,15 +79,15 @@ async def test_media_positive_volume_rounds_to_nearest_step_and_powers_on(
     assert media.volume_level == speed / 10
 
 
-@pytest.mark.parametrize("turn_off", ["zero_volume", "power_control"])
+@pytest.mark.parametrize("turn_off", ["rounded_zero_volume", "power_control"])
 @pytest.mark.parametrize("speed", range(1, 11))
 async def test_media_turn_on_resumes_last_speed_after_turning_off(
     media, turn_off, speed
 ):
     media.coordinator.data.speed = speed
     assert media.volume_level == speed / 10
-    if turn_off == "zero_volume":
-        await media.async_set_volume_level(0)
+    if turn_off == "rounded_zero_volume":
+        await media.async_set_volume_level(0.04)
     else:
         await media.async_turn_off()
     assert media.state == MediaPlayerState.OFF

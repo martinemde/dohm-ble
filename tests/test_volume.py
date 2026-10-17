@@ -37,7 +37,10 @@ def test_exact_steps_round_trip(volume, speed):
 @pytest.mark.parametrize(
     ("volume", "speed"),
     [
-        (0.01, 1),
+        (0.01, 0),
+        (0.04, 0),
+        (0.0499, 0),
+        (0.05, 1),
         (0.14, 1),
         (0.15, 2),
         (0.24, 2),
@@ -54,10 +57,9 @@ def test_volume_rounds_to_nearest_step_with_halves_up(volume, speed):
     assert volume_to_speed(volume) == speed
 
 
-def test_zero_volume_clamps_to_the_quietest_speed():
-    # The helper only maps active speeds. Entity platforms intercept zero
-    # requests and power off instead of sending this clamped speed.
-    assert volume_to_speed(0.0) == MIN_SPEED
+@pytest.mark.parametrize("volume", [0.0, -0.01])
+def test_nonpositive_volume_maps_to_off(volume):
+    assert volume_to_speed(volume) == 0
 
 
 def test_volume_never_exceeds_the_devices_top_speed():
@@ -65,6 +67,6 @@ def test_volume_never_exceeds_the_devices_top_speed():
     assert volume_to_speed(1.5) == MAX_SPEED
 
 
-def test_every_speed_is_reachable_from_some_volume():
+def test_off_and_every_speed_are_reachable_from_some_volume():
     reachable = {volume_to_speed(v / 100) for v in range(101)}
-    assert reachable == set(range(MIN_SPEED, MAX_SPEED + 1))
+    assert reachable == set(range(MAX_SPEED + 1))

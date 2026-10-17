@@ -55,11 +55,11 @@ controls. A `media_player` fits sound and volume better, though its 0–100%
 volume control must snap to the machine's ten hardware levels.
 
 - **Media player (default):** standard volume controls and volume voice intents.
-  Volume 0 turns the machine off without changing its hardware level. Turn on
+  Volume below 5% turns the machine off without changing its hardware level. Turn on
   resumes that level: 30% → 0 → turn on returns to 30%. With no known previous
-  level, turn on starts at 10%. A positive volume powers it on and rounds to
-  the nearest hardware level, with halfway values rounding up: 44% → 40%,
-  45% → 50%. Positive values below 10% use the minimum 10% level.
+  level, turn on starts at 10%. Volume rounds to the nearest hardware level,
+  with halfway values rounding up: 4% → off, 5% → 10%, 44% → 40%, 45% → 50%.
+  A setting that rounds above zero powers the machine on.
 - **Fan:** ten speed levels, shown as 10%, 20%, …, 100%. Fan percentage 0 turns
   the machine off. A positive setting powers it on and snaps up to a real level.
 
@@ -98,8 +98,8 @@ The integration never clears a bond automatically after failed polls.
   next level.
 - **Media player:** device class *speaker*, volume up/down by one hardware
   level, and standard volume intents such as *"set the white noise to 40
-  percent"*. Setting a positive absolute volume while off turns the machine on.
-  Setting volume to 0 turns it off and preserves its last hardware level.
+  percent"*. Setting volume to 5% or above while off turns the machine on.
+  Setting volume below 5% turns it off and preserves its last hardware level.
   It plays no media and offers no transport controls or playback target.
 - **Fan:** standard fan on/off and speed controls with ten discrete steps.
   Turn on without a percentage resumes the current hardware speed.
