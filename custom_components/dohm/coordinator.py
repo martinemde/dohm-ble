@@ -7,6 +7,7 @@ connection (reconnecting through bleak-retry-connector when needed).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
@@ -66,6 +67,9 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
         )
         self.client = client
         self.address = address
+        # Keep a two-read poll from straddling a control command and publishing
+        # its old power/speed after the command's acknowledged state.
+        self._operation_lock = asyncio.Lock()
         self.loaded_platform: Platform = Platform.MEDIA_PLAYER
 
     def _fresh_ble_device(self):
@@ -127,11 +131,12 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
         genuinely stale bond is a deliberate action in the options flow.
         """
         try:
-            await self._ensure_connected()
-            return DohmState(
-                power=await self.client.get_power(),
-                speed=await self.client.get_speed(),
-            )
+            async with self._operation_lock:
+                await self._ensure_connected()
+                return DohmState(
+                    power=await self.client.get_power(),
+                    speed=await self.client.get_speed(),
+                )
         except DohmError as err:
             raise UpdateFailed(str(err)) from err
         except (*BLEAK_EXCEPTIONS, TimeoutError) as err:
@@ -152,16 +157,16 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
         return outcome
 
     async def async_set_power(self, on: bool) -> None:
-        await self._ensure_connected()
-        await self.client.set_power(on)
-        self._async_snap(power=on)
-        await self.async_request_refresh()
+        async with self._operation_lock:
+            await self._ensure_connected()
+            await self.client.set_power(on)
+            self._async_snap(power=on)
 
     async def async_set_speed(self, speed: int) -> None:
-        await self._ensure_connected()
-        await self.client.set_speed(speed)
-        self._async_snap(speed=speed)
-        await self.async_request_refresh()
+        async with self._operation_lock:
+            await self._ensure_connected()
+            await self.client.set_speed(speed)
+            self._async_snap(speed=speed)
 
     def _async_snap(
         self, *, power: bool | None = None, speed: int | None = None
@@ -176,8 +181,9 @@ class DohmCoordinator(DataUpdateCoordinator[DohmState]):
         round-trip later.
 
         Optimistic only as far as the ack: the command was already ack'd by the
-        time we get here, and the refresh below still overwrites this with what
-        the device reports.
+        time we get here. async_set_updated_data resets the normal poll timer;
+        do not immediately read back a value the firmware may not yet reflect.
+        The next scheduled poll remains authoritative.
         """
         if self.data is None:
             return

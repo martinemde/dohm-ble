@@ -28,6 +28,21 @@ limits, and [protocol reference](protocol.md) for command formats.
    routine reconnect step. If it reports partial completion, follow the outcome
    and [proxy-change instructions](pairing.md#moving-between-bluetooth-proxies).
 
+## Power or volume snaps back after a command
+
+Control commands publish their acknowledged power/speed without an immediate
+readback. A read immediately after an ACK can still report the previous state.
+The normal **30-second** polling interval confirms the device state instead;
+physical control changes can take until that poll to appear. Polls and commands
+are serialized so a poll cannot read old power, pause for a command, then publish
+that old power after the command's new state.
+
+This is covered by coordinator tests through the media-player entity, including
+an old immediate power report and a poll in progress during turn-on. It has not
+been verified on hardware. If the state is still wrong at the next normal poll,
+collect the `M,...` command/`m,...` query replies with debug logging below. The
+wire protocol cannot distinguish late same-type replies by request ID.
+
 ## Enable debug logging
 
 In `configuration.yaml`:
