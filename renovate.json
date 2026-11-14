@@ -1,0 +1,26 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "github>martinemde/renovate-config#v1.0.0"
+  ],
+  "enabledManagers": [
+    "pep621",
+    "github-actions",
+    "renovate-config"
+  ],
+  "includePaths": [
+    "pyproject.toml",
+    "uv.lock",
+    ".github/workflows/validate.yml",
+    "renovate.json"
+  ],
+  "packageRules": [
+    {
+      "description": "Require manual review for every dependency update.",
+      "matchPackageNames": [
+        "*"
+      ],
+      "automerge": false
+    }
+  ]
+}

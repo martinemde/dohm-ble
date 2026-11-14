@@ -160,6 +160,8 @@ The reverse-engineering engine (`protocol.py`, `client.py`) stays vendored insid
 uv run pytest
 ```
 
+See [dependency updates](docs/renovate.md) for central Renovate and manual-review policy.
+
 See [contributor instructions](CLAUDE.md) for validation and releases.
 `extract_writes.py` decodes captures. `probe.py` and `explore.py` are historical
 experiments, not supported pairing diagnostics; `explore.py` changes device
