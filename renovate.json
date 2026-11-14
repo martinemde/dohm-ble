@@ -1,7 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "github>martinemde/renovate-config#v1.0.0"
+    "github>martinemde/renovate-config#v1.1.0"
   ],
   "enabledManagers": [
     "pep621",
@@ -18,20 +18,13 @@
     {
       "matchUpdateTypes": [
         "pin",
-        "pinDigest",
-        "major"
+        "pinDigest"
       ],
       "automerge": false
     },
     {
       "matchManagers": [
         "renovate-config"
-      ],
-      "automerge": false
-    },
-    {
-      "matchJsonata": [
-        "isVulnerabilityAlert = true"
       ],
       "automerge": false
     }
