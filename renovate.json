@@ -16,9 +16,22 @@
   ],
   "packageRules": [
     {
-      "description": "Require manual review for every dependency update.",
-      "matchPackageNames": [
-        "*"
+      "matchUpdateTypes": [
+        "pin",
+        "pinDigest",
+        "major"
+      ],
+      "automerge": false
+    },
+    {
+      "matchManagers": [
+        "renovate-config"
+      ],
+      "automerge": false
+    },
+    {
+      "matchJsonata": [
+        "isVulnerabilityAlert = true"
       ],
       "automerge": false
     }

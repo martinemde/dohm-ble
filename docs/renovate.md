@@ -3,8 +3,9 @@
 The central Renovate runner reads the root [`renovate.json`](../renovate.json),
 which extends the shared
 [`martinemde/renovate-config` v1.0.0 preset](https://github.com/martinemde/renovate-config/tree/v1.0.0).
-There is no repository-local Renovate runner. All updates require manual review;
-the final package rule disables automerge even when inherited rules enable it.
+There is no repository-local Renovate runner. Minor, patch and digest updates
+automerge after required hassfest, HACS and unit-test checks pass. Initial pinning,
+major updates, security alerts and shared-policy changes require manual review.
 
 Discovery is limited to the root `pyproject.toml` and `uv.lock`,
 `.github/workflows/validate.yml`, and `renovate.json`. Local `.claude/worktrees`
